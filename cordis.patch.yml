@@ -1,0 +1,238 @@
+# dsh-reading-companion bundle patch: one insert registering the plugin row.
+#
+# The row `id` MUST match the host half's exported cordis `name` (lib/index.js),
+# otherwise the loader mounts a row whose name resolves to nothing.
+#
+# The plugin is purely additive: it never replaces a shipped row, so disabling
+# or removing this single insert is the complete, side-effect-free off switch.
+- insert:
+    - id: 'dsh-reading-companion'
+      name: 'dsh-reading-companion'
+      config:
+        # Book library + notes root. Empty means "$DSH_HOME/dsh-reading-companion".
+        # Kept empty on purpose: the default is resolved through the host's
+        # `dshHomePath()` service so profile moves carry the library along.
+        storageDir: ''
+        # Drop-box scanned by the importer. Relative to storageDir.
+        inboxDir: 'inbox'
+        # Fallback chapter size (in characters) when a TXT has no usable
+        # chapter headings and the indexer degrades to fixed blocks.
+        fallbackBlockChars: 4000
+
+        # Optional allow-list for `POST /library/import`. EMPTY (the default)
+        # means "no restriction": importing a TXT from anywhere on disk is the
+        # feature's legitimate use, so it is not narrowed behind the reader's
+        # back.
+        #
+        # Why the knob exists at all: importing is a LOCAL FILE READ surface.
+        # The plugin has no auth of its own -- it relies entirely on the host's
+        # renderer-token gate (`decideDesktopBrowserAccess`). Anyone who can
+        # call the route can pull any readable file into the library and read
+        # it back through the reader routes. Set this to e.g.
+        # `['D:\Books', 'D:\Download']` to bound that read surface.
+        #
+        # Matching is done on the REAL path, so a link pointing into an allowed
+        # root does not smuggle anything out of a disallowed one.
+        importRoots: []
+
+        # Default export directory for `POST /books/:bookId/export`.
+        #
+        # EMPTY (the default) means "not configured", and the route then falls back
+        # to the WORKSPACE ROOT OF THE SESSION THIS BOOK IS BOUND TO -- which is
+        # usually right next to the reader's note vault, and is something a global
+        # config value simply cannot know (it has no idea which book is which).
+        #
+        # The reader can override this at runtime from the panel; that writes
+        # `exportDir` into `settings.json`. Priority: settings > this > workspace root.
+        exportDir: ''
+
+        # Rule A: the path gate. A tool call whose arguments point at a book's
+        # own raw text (content.txt / source.txt / chapters.json) is always
+        # refused, whichever session it came from. This is the only HARD rule
+        # left, and it is what stops a model from opening chapter 239.
+        #
+        # There used to be a second rule that blanket-denied read/grep/bash/
+        # write/web_* inside a companion session. It was removed: the reader
+        # wants "don't spoil", not "don't use tools" -- a blanket deny also took
+        # away fetching a historical source or doing arithmetic.
+        #
+        # Turn this off only if it misfires on legitimate work.
+        spoilerGate: true
+
+        # "First-read spoiler guard" for the web. Three levels:
+        #
+        #   'block-all'  (default) the companion session may not use the web at all
+        #   'block-book' allow the web, but refuse queries that look like they are
+        #                about THIS book (its title, its characters, plot words like
+        #                "ending"). This is a HEURISTIC -- it stops accidents, not
+        #                a deliberate lookup phrased differently.
+        #   'off'        no restriction
+        #
+        # Only the tool layer is affected. The prompt-level "never spoil on your
+        # own" rules are always in force, at every level.
+        #
+        # This is the INSTALL-TIME DEFAULT. The reader can override it at runtime
+        # from the panel ("防剧透闸" -> three buttons), which writes
+        # `settings.json` in the storage dir. Priority: settings > this value.
+        # The two "blocked" levels read the same in the prompt on purpose; they
+        # differ only in how strict the tool gate is.
+        webGate: 'block-all'
+
+        # Read-window budget. A long book's whole past cannot fit in one context,
+        # so the window is layered: the current chapter goes in FULL, the previous
+        # one is by default only its LAST 60% (see previousChapterMode below), and
+        # everything before that is represented by background.md -- the growing
+        # understanding described below.
+        #
+        #   currentChapterMode      'full' = hand over the WHOLE current chapter;
+        #                           'read-so-far' = only up to the reader's cursor.
+        #                           'full' is the default because the reader asked
+        #                           for "read this chapter in full". Switch to
+        #                           'read-so-far' for the strict cursor boundary.
+        #   headAllowanceChars      used only by 'read-so-far': the minimum of the
+        #                           current chapter always shown (the reader sees
+        #                           the first screen the moment they open it)
+        #   backgroundBudgetChars   cap on the background-understanding block.
+        #                           When background.md outgrows it, the block is
+        #                           trimmed by priority (relationships first) and
+        #                           the panel says what was left out.
+        #   backgroundCoarseDegrade A second rung on the degradation ladder
+        #                           (default on). Before a subject is dropped
+        #                           whole, it is shown COARSE: `### Subject`
+        #                           plus its single most recent entry. This rung
+        #                           only ever FILLS SPACE left over after the
+        #                           full-fidelity units are placed, so with a
+        #                           roomy budget the output is byte-for-byte
+        #                           unchanged; it never downgrades something that
+        #                           would otherwise be shown in full. Set false
+        #                           for the pre-v1.25 two-rung ladder (drop
+        #                           outright).
+        #   compactThreshold        when background.md exceeds
+        #                           backgroundBudgetChars * this, the next fill
+        #                           COMPACTS it first. Compaction is what keeps the
+        #                           block inside budget, and therefore what keeps
+        #                           the cached prefix stable. Set to 1 to disable
+        #                           automatic compaction (trimming still happens).
+        #   previousChapterMode     how much of the PREVIOUS chapter is fed in.
+        #                           'tail' (default) = only its last 60%, cut at a
+        #                           paragraph start; 'full' = the whole chapter
+        #                           (the pre-v1.24 behaviour). Cross-chapter talk
+        #                           almost always looks back at the END of the
+        #                           previous chapter, and the whole chapter is the
+        #                           second-largest variable block in the prompt.
+        #   discussionLimit         how many discussion-timeline entries to inject
+        window:
+          currentChapterMode: 'full'
+          previousChapterMode: 'tail'
+          headAllowanceChars: 1500
+          backgroundBudgetChars: 9000
+          backgroundCoarseDegrade: true
+          compactThreshold: 0.85
+          discussionLimit: 8
+
+        # Sampling budget for ONE memory-fill call, in characters.
+        #
+        # This is what decides how long a gap a single call can close. The fill
+        # samples chapter heads and tails rather than whole chapters, spreads the
+        # budget across the gap, and — when even the per-chapter floor will not
+        # fit — covers only the leading part of the gap. The watermark advances
+        # to what was actually covered; the rest waits for the next fill.
+        #
+        #   lengthRatio
+        #       OPT-IN. 0 (the default) = an equal share of the budget
+        #       (`budgetChars / sum of weights`), clamped by minPerChapter /
+        #       maxPerChapter — the pre-v1.24 shape. Set to 0.2 (and drop
+        #       minPerChapter to 60) to switch to the proportional shape:
+        #       `clamp(lengthRatio x chapter length, min, max)`, times the
+        #       chapter's emphasis weight.
+        #
+        #       Why proportional was tried: with an ABSOLUTE floor, how much a
+        #       chapter gets depends on its length, and chapter length is a
+        #       publishing artefact, not an amount of story (design-v1 §197).
+        #
+        #       Why it is NOT the default (v1.25, reader's call): the cost is
+        #       that SHORT chapters get cut harder than before. A 200-character
+        #       chapter fits whole under the equal-share shape, but only gets the
+        #       floor under the proportional one. A reader's material is not only
+        #       long novels — note-form, aphorism, poetry and document-style
+        #       texts are real use, and long-book merge ratios must not be bought
+        #       with them. Both shapes have dedicated tests.
+        #   emphasisChapters / emphasisFactor
+        #       The FIRST chapters (by absolute chapter number, not "the first
+        #       chapters of this batch") receive `emphasisFactor` times the
+        #       characters. Volume-opening chapters (a chapter whose `volume`
+        #       differs from the previous one) count as emphasised too. Even
+        #       sampling gives every chapter ~2.5 sentences, which yields
+        #       understanding that is wide and paper-thin; a book's opening and
+        #       each volume's opening are where the world and the cast are densest.
+        #   foundationChapters
+        #       Cap on the FIRST fill only (when background.md has no covered
+        #       range yet). Reading to chapter 300 and filling for the first time
+        #       should read the opening thick, not spread 24000 chars over 240
+        #       chapters. The remainder is covered by a second, uncapped fill.
+        #   minPerChapter
+        #       NOTE: in the default shape this is NOT "every chapter gets this
+        #       many characters" -- it is the FLOOR of the equal-share quota
+        #       (`budgetChars / sum of weights`). It therefore ALSO decides how
+        #       many chapters one batch can swallow:
+        #           chapters per batch ~= budgetChars / minPerChapter
+        #       i.e. "how thick each chapter is" and "how wide one batch is" are
+        #       two names for the SAME knob. 150 (raised from 100) means one batch
+        #       drops from ~240 to ~160 chapters -- deeper per chapter, but MORE
+        #       batches and therefore more wall-clock. The thick reading is
+        #       mainly handled by recentMinPerChapter below.
+        #
+        #   jumpGateChapters
+        #       The JUMP GATE threshold. When one fill would have to close a gap
+        #       wider than this, the fill does NOT happen: the route returns 409
+        #       with the gap range and the panel offers -- "I have read all of
+        #       these" (mode: 'all'), "only the most recent N chapters"
+        #       (mode: 'recent'), or "not now". Set to 0 to disable the gate.
+        #
+        #       NOTE (since v2.0.2): this is ONLY the threshold. It used to double
+        #       as the 'recent' window size, which meant widening the window
+        #       required loosening the gate -- two unrelated things tied together.
+        #       The window is now recentWindowChapters.
+        #
+        #       Why a gate at all: jumping straight to chapter 1000 makes the
+        #       first fill write chapter-900 facts into background.md, and that
+        #       file is injected verbatim from then on. Going back to chapter 50
+        #       afterwards is a silent spoiler with no clean undo -- the only
+        #       remedy is "clear and rebuild", which also wipes what was genuinely
+        #       read. The gate is not a ban on filling; it is one question first.
+        #
+        #   recentWindowChapters
+        #       Window size (in chapters) for "only the most recent stretch".
+        #       Default 200. The reader can change it per call from the gate
+        #       dialog (request body `recentWindow`), so this is a default, not a
+        #       ceiling.
+        #
+        #   recentMinPerChapter
+        #       The per-chapter floor used ONLY by the 'recent' path -- thicker
+        #       than minPerChapter. The two paths have different jobs: "all" is
+        #       "so I am not completely lost" (width first), "recent" is "I want
+        #       to actually talk about this chapter" (depth first). One floor
+        #       cannot serve both.
+        #
+        #       NOTE: thicker means one batch swallows FEWER chapters
+        #       (24000 / 300 = 80), so "the most recent 200 chapters" takes about
+        #       3 batches. That is the intended trade, not a side effect.
+        sample:
+          budgetChars: 24000
+          minPerChapter: 150
+          maxPerChapter: 600
+          # 0 = equal share of the budget (default). 0.2 = proportional to
+          # chapter length -- see the lengthRatio notes above for the trade.
+          lengthRatio: 0
+          foundationChapters: 30
+          emphasisChapters: 5
+          emphasisFactor: 3
+          jumpGateChapters: 50
+          recentWindowChapters: 200
+          recentMinPerChapter: 300
+
+        # A memory fill may block this long. The reader chose the blocking
+        # behaviour ("waiting tens of seconds is fine"), so this is generous.
+        # The call is raced against an abort timer inside the plugin, so it can
+        # never hang forever regardless of this value.
+        memoryTimeoutMs: 120000
