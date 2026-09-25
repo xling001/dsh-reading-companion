@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+.tmp/
+*.tmp
+
+# 本机的 DSH 安装路径（test/cordis-integration.test.mjs 用）。
+# 每人一行自己的路径，不入库。
+.dsh-app-path

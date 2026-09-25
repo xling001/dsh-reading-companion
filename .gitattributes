@@ -1,0 +1,23 @@
+# 全部文本文件在仓库里一律用 LF 存档。
+#
+# 这不是风格偏好，是**正确性**要求：本插件的正文读取依赖**字节偏移**
+# （`lib/host/encoding.js` 先做换行归一化，`lib/host/library.js` 再按
+# 归一化后的文本累加偏移，章节区间靠 `Buffer` 字节区间切出来）。
+# 如果 git 在检出时把 txt/源码改写成 CRLF，同一本书在不同平台上算出的
+# 偏移就会不同——这类故障不会报错，只会让"读到第 N 章"落在错误的位置。
+#
+# 开发机是 Windows，所以这条必须显式声明，不能依赖平台默认值。
+* text=auto eol=lf
+
+# 二进制/数据文件不要做任何换行转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.gz   binary
+
+# 测试夹具里的 .txt 是**真实字节**，绝不能被改写
+test/**/*.txt  -text
+test/**/*.json -text

@@ -1,0 +1,75 @@
+{
+  "name": "dsh-reading-companion",
+  "version": "2.0.6",
+  "description": "DSH 本地阅读 + AI 陪读插件：导入本地 TXT、自动生成目录、按进度滚动阅读，并以「不剧透」的书友口吻陪你聊感想，把「原文摘抄—我的感想—AI 回应」写成结构化 Markdown 笔记。Local-ebook reader with a spoiler-safe AI reading companion for DeepSeek Harness (DSH).",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "reader",
+    "ebook",
+    "txt",
+    "reading-companion",
+    "notes"
+  ],
+  "license": "MIT",
+  "author": "溪泠",
+  "contributors": [
+    {
+      "name": "溪泠"
+    },
+    {
+      "name": "AI (DSH coding agent)",
+      "url": "https://github.com/deepseek-ai"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xling001/dsh-reading-companion.git"
+  },
+  "homepage": "https://github.com/xling001/dsh-reading-companion#readme",
+  "bugs": {
+    "url": "https://github.com/xling001/dsh-reading-companion/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "dsh-better-sidebar": ">=0.19.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-better-sidebar": {
+      "optional": true
+    }
+  },
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "docs",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "test:no-isolation": "node --test --test-isolation=none"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  }
+}
