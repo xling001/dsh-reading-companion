@@ -1,0 +1,45 @@
+name: test
+
+# 这个仓库是"零依赖 + 无构建"的：没有 npm 依赖要装，测试直接跑 Node 内置 test runner。
+# 所以 CI 里**没有 install 步骤**，这也是本插件能在 DSH 里热改即生效的前提。
+#
+# 覆盖 Node 22 / 24 两档，因为 package.json 的 engines 同时允许两者，
+# 而编码探测与字节区间那部分用的是 Buffer API，值得跨大版本钉一次。
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22.19', '24']
+    name: node ${{ matrix.node }} @ ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 不跑 pnpm/npm install：本包 dependencies 为空。
+      #
+      # ⚠️ **不要在这里加 `--test-isolation=none`。** 它能让所有测试共享一个进程、
+      # 本地跑得快些，但那个开关**在 Node 22.19 上还不存在** —— 加了它，CI 会在
+      # 22.19 两档上以**退出码 9（Invalid Argument）**在 1 秒内失败。
+      # v2.0.4 首发时就是这么红的：Node 24 两档全绿、22.19 两档全红，注解只有
+      # 一句 "Process completed with exit code 9"。
+      # CI 用默认的"每个测试文件一个进程"完全没问题；只有**受限沙箱**
+      # （不能 spawn 子进程）才需要那个开关，见 README 里的 `npm run test:no-isolation`。
+      #
+      # 刻意**不设** DSH_APP_NODE_MODULES：CI 上没有 DSH，
+      # cordis-integration 会走它默认的"找不到就跳过"分支。
+      # 设成空串反而可能被当成一个真实路径。
+      - name: unit + integration tests
+        run: node --test
