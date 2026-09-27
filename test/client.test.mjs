@@ -1285,6 +1285,85 @@ test('接线守卫：按钮的面保持透明（宿主的 button-*-fill 是"浮�
   )
 })
 
+test('书架分类折叠：规整函数对任何垃圾都不抛错，且默认是"全展开"', async () => {
+  const mod = await loadClientModule()
+  const { normalizeCollapsedCategories, toggleCollapsedCategory, COLLAPSED_CATEGORIES_KEY } = mod.__internals
+
+  // ⚠️ 这个值会被用户手改、也可能被旧版本写成别的形状。读坏了必须回落成"全展开"，
+  //    而不是让整个书架白屏 —— 所以下面每一种垃圾都断言同一个结果。
+  for (const junk of [null, undefined, 0, '', {}, 'gl小说', [1, 2], [null], [[]], [{ a: 1 }]]) {
+    assert.deepEqual(
+      normalizeCollapsedCategories(junk),
+      [],
+      `${JSON.stringify(junk)} 应当被当作"什么都没收起"`,
+    )
+  }
+  // 正常值：去空白、去空串、去重，且保序。
+  assert.deepEqual(
+    normalizeCollapsedCategories(['  gl小说  ', '专业书', 'gl小说', '', '   ', 42]),
+    ['gl小说', '专业书'],
+  )
+
+  // 切换：不在名单里 → 加进去；在名单里 → 拿出来。都要返回**新数组**（React 要新引用）。
+  const base = ['专业书']
+  const added = toggleCollapsedCategory(base, 'gl小说')
+  assert.deepEqual(added, ['专业书', 'gl小说'])
+  assert.deepEqual(base, ['专业书'], '不许改原数组')
+  assert.deepEqual(toggleCollapsedCategory(added, '专业书'), ['gl小说'])
+  // 传进来的名单本身是垃圾时，切换也该正常工作（等价于"从全展开开始"）。
+  assert.deepEqual(toggleCollapsedCategory(null, '专业书'), ['专业书'])
+
+  // 键名是契约：改了它，读者已经收起的分类会"自己又展开了"。
+  assert.equal(COLLAPSED_CATEGORIES_KEY, 'drc:collapsed-categories')
+})
+
+test('接线守卫：书架的分类标题是可折叠开关（默认展开，收起状态跨会话记住）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // 标题是**按钮**且带 aria-expanded —— 键盘与读屏用户拿到的必须是同一个可切换控件。
+  assert.match(source, /className: 'drc-label drc-cat-toggle'/)
+  assert.match(source, /'aria-expanded': collapsedCategories\.includes\(group\.category\) \? 'false' : 'true'/)
+  // 收起时只留标题行：书目数还在（`（N）`），列表不渲染。
+  assert.match(
+    source,
+    /collapsedCategories\.includes\(group\.category\) \? null : group\.books\.length === 0/,
+    '收起时必须跳过列表，只留标题行',
+  )
+  // 落盘走 localStorage，且读/写都吞异常（隐私模式下不该炸）。
+  assert.match(source, /loadCollapsedCategories/)
+  assert.match(source, /saveCollapsedCategories\(next\)/)
+  assert.match(source, /globalThis\.localStorage\?\.getItem\(COLLAPSED_CATEGORIES_KEY\)/)
+  // ⚠️ 与目录里的「卷」刻意不同：卷的展开状态**不**持久化。两处理由都要在，
+  //    否则以后会有人把其中一个"统一"掉。
+  assert.match(source, /那是"我正在翻这本书的目录"的过程状态/)
+  assert.match(source, /那是"我平时不想在书架上看见哪几类"的\*\*偏好\*\*/)
+})
+
+test('接线守卫：提示条是浮动 toast（观感对标 lumina，长文不自动消失）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // 观感规格取自 MilkFeng/lumina 的 ToastBubble / ToastService（MIT）：胶囊 + 毛玻璃 + 3 秒 + 点击即消。
+  assert.match(source, /const TOAST_DWELL_MS = 3000/, '停留时长应当是 3 秒')
+  assert.match(source, /border-radius: 999px/, '胶囊形状')
+  assert.match(source, /backdrop-filter: blur\(16px\)/, '毛玻璃')
+  // ⚠️ 长文不自动消失：`importOutcomeText()` 那类结果要留给人读，3 秒后消失等于丢信息。
+  assert.match(source, /text\.length > TOAST_LONG_CHARS\) return undefined/, '长文不该被计时器收走')
+  // 三处提示（书架 / 笔记 / 设置）共用同一个组件 —— 观感只有一份定义，旧的写死内联渲染一个都不剩。
+  assert.equal(
+    (source.match(/h\(Notice, \{ notice, onDismiss/g) ?? []).length,
+    3,
+    '三处提示都要走 Notice',
+  )
+  // 颜色走别名层（宿主墨色/底色互相顶替），不写死；面层也不靠阴影分层。
+  assert.match(source, /--drc-toast-bg: var\(--dsw-alias-label-primary\)/)
+  assert.match(source, /--drc-toast-fg: var\(--dsw-alias-bg-base\)/)
+  assert.match(source, /\.drc-toast \{ box-shadow: none; \}/)
+  // 减少动态偏好下不播进出场动画。
+  assert.match(source, /prefers-reduced-motion: reduce[\s\S]{0,60}\.drc-toast \{ animation: none; \}/)
+})
+
 test('接线守卫：界面文字默认不可选中（正文等例外）、边框粗细只有两种用途', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
