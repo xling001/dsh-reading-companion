@@ -12,15 +12,28 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { after } from 'node:test'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 /** 测试期落盘根目录：必须在工作区内，否则会被文件沙箱拒绝。 */
 const TMP = join(ROOT, 'test', '.tmp')
 const API_ROOT = '/dsh-reading-companion/api'
 const PLUGIN_NAME = 'dsh-reading-companion'
+
+/**
+ * 本文件的两个临时目录是**字面名**（不是 `makeDir()` 那种带进程号+时间戳的），
+ * 所以它们既不会被 helper 的退出清理覆盖，也会**跨轮复用同一个路径** ——
+ * 上一轮的残留能被这一轮读到（正是 CONTRIBUTING 里「与改动无关的红」那一节讲的东西）。
+ * 这里在文件跑完时删掉它们：既回收磁盘，也让每一次运行都从干净状态开始。
+ */
+after(() => {
+  for (const name of ['custom-books', PLUGIN_NAME]) {
+    rmSync(join(TMP, name), { recursive: true, force: true })
+  }
+})
 
 /** 每次带不同的 query，绕开 ESM 模块缓存。 */
 let loadSeq = 0

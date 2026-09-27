@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -202,14 +202,45 @@ export async function startServer(dir, options = {}) {
 }
 
 let dirSeq = 0
+
 /**
- * 建一个干净的测试书库目录。
+ * 本进程建过的临时目录，进程退出时一并删掉。
+ *
+ * ⚠️ **为什么挂在 `process.on('exit')` 上，而不是 `node:test` 的 `after()`**：
+ * 测试文件默认**各跑一个进程**，`after()` 只在同一个文件内生效 —— 而漏掉清理的
+ * 恰恰是"某个文件建了目录却没人管"这种情况。`exit` 是每个进程都会走到的那一个点。
+ * 回调里只能同步删（`rmSync`），不能等异步。
+ */
+const createdDirs = []
+let cleanupRegistered = false
+
+function registerCleanup() {
+  if (cleanupRegistered) return
+  cleanupRegistered = true
+  process.on('exit', () => {
+    for (const dir of createdDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        /* 删不掉就算了：这只影响磁盘占用，不该让测试结果变色 */
+      }
+    }
+  })
+}
+
+/**
+ * 建一个干净的测试书库目录，并**登记为退出时清理**。
  *
  * ⚠️ **目录名里的 `Date.now()` 不是装饰，是防"两次运行撞同一个路径"。**
  * 原先只有 `${tag}-${进程号}-${序号}`，而 **Windows 会重用进程号**、序号在同一处
  * 又是确定的 —— 两次不同的运行会算出**完全相同的路径**；用例大多不清理自己，
  * 于是**读到了上一轮的残留**（实测到一条只写 2 条记录的用例读到 4 条，表现是
  * 一堆与本轮改动毫无关系的红）。详见 CONTRIBUTING 的「与改动无关的红」一节。
+ *
+ * ⚠️ **2026-09-27 补上的下半句**：路径不撞只解决"读到上一轮"，**不解决磁盘占用** ——
+ * 一天跑下来 `test/.tmp` 能攒到 8 万多个文件 / 87 MB（实测）。所以现在**每个目录都在
+ * 这里登记、进程退出时统一删**。清理是"兜底"，用例自己 `f.cleanup()` 仍然更好（能更早
+ * 释放，也能让"这个用例到底动没动盘"更清楚）。
  *
  * @param {string} [tag] 目录名前缀，便于在 .tmp 里分辨是哪个文件建的
  * @returns {string} 绝对路径
@@ -218,6 +249,8 @@ export function makeDir(tag = 'http') {
   dirSeq += 1
   const dir = join(TMP, `${tag}-${process.pid}-${Date.now()}-${dirSeq}`)
   mkdirSync(dir, { recursive: true })
+  createdDirs.push(dir)
+  registerCleanup()
   return dir
 }
 
