@@ -350,7 +350,7 @@ test('守则：联网说法跟着档位变，但"不主动剧透"始终在', () 
 
   for (const text of [blocked, open]) {
     assert.match(text, /绝不主动剧透/, '守则的第一条不受档位影响')
-    assert.match(text, /不猜后续/)
+    assert.match(text, /分清事实、引语与推断/)
     assert.match(text, /背景认识/)
     // 「人设不能取消守则」这一条必须**无条件**出现：它是唯一能挡住
     // "读者写一句『详细讲讲后续』"的地方，而且它一旦随人设有无而变化，
@@ -359,6 +359,46 @@ test('守则：联网说法跟着档位变，但"不主动剧透"始终在', () 
   }
   assert.match(blocked, /不要联网查这本书/)
   assert.match(open, /联网只用来查设定/)
+})
+
+test('守则：元剧透清单（防"制造期待"，而不只是防情节）', () => {
+  const text = renderPolicy('魔女霓裳', { webGate: 'block-all' })
+
+  // ⚠️ 这一整条借鉴自 locoda/duizuo-reading-companion-skill（MIT）的「元剧透检查」。
+  //    它防的东西**材料层防不住**：我们的投喂已经不含后文了，可模型自己知道这本书，
+  //    于是它仍然可以"替他制造期待"。以下每一条都对应一种真实会顺口说出来的话。
+  assert.match(text, /「后面有反转」/, '形式预告')
+  assert.match(text, /「熬过这段就好」/, '安慰式的进度暗示')
+  assert.match(text, /指向未来的阅读指令/, '"以后看到 X 留意"这类话也算剧透')
+  assert.match(text, /「记下这个后面会用到」/)
+  assert.match(text, /别用「我先不说」制造暗示/, '"我先不说"本身就是提示')
+  assert.match(text, /「只是地理 \/ 结构」「没有具体事件」为由提前确认未读内容/)
+})
+
+test('守则：引文只能来自原文、推断要写成推断（防"凭记忆引后文"）', () => {
+  const text = renderPolicy('魔女霓裳', { webGate: 'block-all' })
+
+  // ⚠️ 这条是**真空白**：从前守则只说了"分清知道与不知道"，而模型完全可能凭训练
+  //    记忆把**后面**才出现的句子当成引文说出来 —— 那是一条绕过材料层的剧透通道。
+  assert.match(text, /引文只能来自下方给你的正文，或读者自己贴出来的片段/)
+  assert.match(text, /把\*\*后面\*\*才出现的句子当成引文说出来，就是剧透/)
+  // 解释性句子只要声称了具体事件结果，仍要按事实核证；纯叙事效果则用读法口吻。
+  assert.match(text, /只要它声称了具体结果/)
+  assert.match(text, /这里可以读作/)
+})
+
+test('守则：来源声明与"读者优先于二手来源"', () => {
+  const text = renderPolicy('魔女霓裳', { webGate: 'off' })
+
+  // ⚠️ 同样借鉴自对坐，而且只取**设定/背景类**这一半：在"剧情"上我们比它更严
+  //    （它允许"带来源标注地转述"，我们直接禁止 —— 见最后一条断言）。
+  assert.match(text, /第一句话就要说明来源与把握/)
+  assert.match(text, /也包括你自己的记忆/, '模型自己的记忆也是二手来源')
+  assert.match(text, /永远不要用二手来源去纠正读者读到或听到的内容/)
+  assert.match(text, /连"书评说的不一样"这种中性的提及/, '中性提及同样算越界')
+  assert.match(text, /只有他\*\*明确问\*\*"书评里怎么说"时才可以转述/)
+  // 与既有联网规则不冲突：剧情仍然一律不许讲（我们更严，这一条不能被动摇）。
+  assert.match(text, /去搜这本书的剧情、结局、后续/)
 })
 
 test('守则：与"有没有背景认识"无关——它必须逐字节稳定，否则缓存每章失效', () => {
@@ -390,8 +430,25 @@ test('缺口：前文末日是当前章的前一章（当前章由窗口全文�
   assert.equal(backgroundGap(null, -1), null)
 })
 
-test('背景渲染：覆盖区间与缺口都要明说，缺口是这一层的守门人', () => {
-  const doc = parseBackground([
+test('缺口：措辞必须把"我还没纳入"与"不能剧透"分开（否则它会拒答读者已读的章）', () => {
+  const text = renderSituation({
+    progress: { chapterIndex: 30 },
+    backgroundCovered: { first: 1, last: 10 },
+    totalChapters: 80,
+    hasBackground: true,
+  })
+
+  // ⚠️ 读者实测担心的形状：记忆停在第 10 章、进度在第 31 章，他问**第 20 章**的事。
+  //    第 20 章**他读过** —— 所以那不是剧透，只是模型还没把它整理进记忆。
+  //    含糊的措辞会让它回一句听起来像"这个我不能说"的话，那正是要避免的。
+  assert.match(text, /覆盖到第 10 章；第 11–30 章\*\*尚未\*\*纳入/)
+  assert.match(text, /这\*\*不是\*\*剧透问题/)
+  assert.match(text, /那一段读者\*\*已经读过\*\*了/)
+  assert.match(text, /不要说"这个我不能说"/)
+  assert.match(text, /补齐前文记忆/, '必须给读者一个可执行的下一步')
+})
+
+test('背景渲染：覆盖区间与缺口都要明说，缺口是这一层的守门人', () => {  const doc = parseBackground([
     '<!-- drc-background: schema=1 covered=1..3 -->',
     '# 《魔女霓裳》· 背景认识',
     '## 人物关系',
