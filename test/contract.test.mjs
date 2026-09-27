@@ -81,7 +81,9 @@ test('契约：反过来的漏网检查 —— 关键路由必须真的被客户
   // 悄悄摘掉了，而单看"路径有对应路由"是发现不了的（没有调用就没有路径）。
   const joined = CLIENT_PATHS.join('\n')
   assert.match(joined, /\/binding/, 'P2：客户端必须能绑定/解绑会话')
-  assert.match(joined, /\/context/, 'P2：客户端必须能做 AI 视角预览')
+  // ⚠️ `/context`（「AI 视角预览」）**2026-09-27 被读者决定从面板摘掉**（它是只读视图，
+  //    需要时可以从别处看），所以这条断言**有意删掉** —— 它不是"漏网"，是决定。
+  //    宿主侧那条路由仍然在（本文件上面那条测试照样管着它），这样能力没丢、只有入口没了。
   assert.match(joined, /\/notes/, 'P3：客户端必须能读笔记')
   assert.match(joined, /\/drafts/, 'P3：客户端必须能读写草稿')
   assert.match(joined, /\/commit/, 'P3：客户端必须能把草稿提交成笔记')

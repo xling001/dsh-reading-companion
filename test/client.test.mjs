@@ -1285,42 +1285,47 @@ test('接线守卫：按钮的面保持透明（宿主的 button-*-fill 是"浮�
   )
 })
 
-test('书架分类折叠：规整函数对任何垃圾都不抛错，且默认是"全展开"', async () => {
+test('折叠：名字集合的规整函数对任何垃圾都不抛错，且默认是空集合', async () => {
   const mod = await loadClientModule()
-  const { normalizeCollapsedCategories, toggleCollapsedCategory, COLLAPSED_CATEGORIES_KEY } = mod.__internals
+  const { normalizeNameSet, toggleNameInSet, SHELF_COLLAPSED_KEY, CARDS_EXPANDED_KEY } = mod.__internals
 
-  // ⚠️ 这个值会被用户手改、也可能被旧版本写成别的形状。读坏了必须回落成"全展开"，
-  //    而不是让整个书架白屏 —— 所以下面每一种垃圾都断言同一个结果。
+  // ⚠️ 这个值会被用户手改、也可能被旧版本写成别的形状。读坏了必须回落成空集合，
+  //    而不是让整个界面白屏 —— 所以下面每一种垃圾都断言同一个结果。
   for (const junk of [null, undefined, 0, '', {}, 'gl小说', [1, 2], [null], [[]], [{ a: 1 }]]) {
     assert.deepEqual(
-      normalizeCollapsedCategories(junk),
+      normalizeNameSet(junk),
       [],
-      `${JSON.stringify(junk)} 应当被当作"什么都没收起"`,
+      `${JSON.stringify(junk)} 应当被当作空集合`,
     )
   }
   // 正常值：去空白、去空串、去重，且保序。
   assert.deepEqual(
-    normalizeCollapsedCategories(['  gl小说  ', '专业书', 'gl小说', '', '   ', 42]),
+    normalizeNameSet(['  gl小说  ', '专业书', 'gl小说', '', '   ', 42]),
     ['gl小说', '专业书'],
   )
 
-  // 切换：不在名单里 → 加进去；在名单里 → 拿出来。都要返回**新数组**（React 要新引用）。
+  // 切换：不在集合里 → 加进去；在集合里 → 拿出来。都要返回**新数组**（React 要新引用）。
   const base = ['专业书']
-  const added = toggleCollapsedCategory(base, 'gl小说')
+  const added = toggleNameInSet(base, 'gl小说')
   assert.deepEqual(added, ['专业书', 'gl小说'])
   assert.deepEqual(base, ['专业书'], '不许改原数组')
-  assert.deepEqual(toggleCollapsedCategory(added, '专业书'), ['gl小说'])
-  // 传进来的名单本身是垃圾时，切换也该正常工作（等价于"从全展开开始"）。
-  assert.deepEqual(toggleCollapsedCategory(null, '专业书'), ['专业书'])
+  assert.deepEqual(toggleNameInSet(added, '专业书'), ['gl小说'])
+  // 传进来的集合本身是垃圾时，切换也该正常工作（等价于"从空集合开始"）。
+  assert.deepEqual(toggleNameInSet(null, '专业书'), ['专业书'])
+  // 人物卡的键形如 `分区/名字`：斜杠不能被规整弄丢，它就是靠这个区分同名主体。
+  assert.deepEqual(toggleNameInSet([], '人物/竹纤'), ['人物/竹纤'])
 
-  // 键名是契约：改了它，读者已经收起的分类会"自己又展开了"。
-  assert.equal(COLLAPSED_CATEGORIES_KEY, 'drc:collapsed-categories')
+  // ⚠️ **两个键都是契约**：改字符串 = 读者已经收起/展开的东西会自己翻回去。
+  assert.equal(SHELF_COLLAPSED_KEY, 'drc:collapsed-categories')
+  assert.equal(CARDS_EXPANDED_KEY, 'drc:expanded-cards')
+  assert.notEqual(SHELF_COLLAPSED_KEY, CARDS_EXPANDED_KEY, '两处各存一份，否则会互相覆盖')
 })
 
-test('接线守卫：书架的分类标题是可折叠开关（默认展开，收起状态跨会话记住）', () => {
+test('接线守卫：书架分类与人物卡都是可折叠开关（收起状态跨会话记住）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
+  // ---- 书架分类 ----
   // 标题是**按钮**且带 aria-expanded —— 键盘与读屏用户拿到的必须是同一个可切换控件。
   assert.match(source, /className: 'drc-label drc-cat-toggle'/)
   assert.match(source, /'aria-expanded': collapsedCategories\.includes\(group\.category\) \? 'false' : 'true'/)
@@ -1330,14 +1335,82 @@ test('接线守卫：书架的分类标题是可折叠开关（默认展开，�
     /collapsedCategories\.includes\(group\.category\) \? null : group\.books\.length === 0/,
     '收起时必须跳过列表，只留标题行',
   )
-  // 落盘走 localStorage，且读/写都吞异常（隐私模式下不该炸）。
-  assert.match(source, /loadCollapsedCategories/)
-  assert.match(source, /saveCollapsedCategories\(next\)/)
-  assert.match(source, /globalThis\.localStorage\?\.getItem\(COLLAPSED_CATEGORIES_KEY\)/)
+  assert.match(source, /loadNameSet\(SHELF_COLLAPSED_KEY\)/)
+  assert.match(source, /saveNameSet\(SHELF_COLLAPSED_KEY, next\)/)
+
+  // ---- 人物卡：默认**全折叠**（读者定的），所以存的是"展开的" ----
+  assert.match(source, /className: 'drc-item-sub drc-card-toggle'/)
+  assert.match(source, /loadNameSet\(CARDS_EXPANDED_KEY\)/)
+  assert.match(source, /saveNameSet\(CARDS_EXPANDED_KEY, next\)/)
+  // ⚠️ 这条钉的是**默认值的方向**：不在展开名单里 = 折叠。
+  assert.match(
+    source,
+    /const folded = !expandedCards\.includes\(cardKey\)/,
+    '人物卡必须默认折叠（存展开名单，空集合 = 全折叠）',
+  )
+  // 收起时只留标题那一行（条数与最新章号仍看得见）；展开时仍只显示最后两条。
+  assert.match(
+    source,
+    /folded \? null : card\.entries\.slice\(-2\)/,
+    '收起时必须跳过条目，只留标题行',
+  )
+  // 键用 `分区/名字`：同名主体在「人物」与「通用概念」里各有一张卡，不该一起收。
+  assert.match(source, /const cardKey = `\$\{card\.section\}\/\$\{card\.name\}`/)
+
+  // 读 localStorage 要吞异常（隐私模式 / 配额下不该炸）。
+  assert.match(source, /globalThis\.localStorage\?\.getItem\(key\)/)
   // ⚠️ 与目录里的「卷」刻意不同：卷的展开状态**不**持久化。两处理由都要在，
   //    否则以后会有人把其中一个"统一"掉。
   assert.match(source, /那是"我正在翻这本书的目录"的过程状态/)
-  assert.match(source, /那是"我平时不想在书架上看见哪几类"的\*\*偏好\*\*/)
+  assert.match(source, /那是"我平时不想看见哪几类 \/ 哪几个人"的\*\*偏好\*\*/)
+})
+
+test('接线守卫：人物卡是独立小节，且紧挨在「讨论历史」之前', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  const sectionAt = (title) => source.indexOf(`h('div', { className: 'drc-item-name' }, '${title}')`)
+  const cards = sectionAt('人物卡')
+  const talk = sectionAt('讨论历史')
+  const background = sectionAt('背景认识（记忆）')
+  const exportAt = sectionAt('导出到笔记库')
+
+  assert.ok(cards > 0, '人物卡必须是一个独立小节的标题')
+  assert.ok(talk > cards, '人物卡要在「讨论历史」之前')
+  assert.ok(cards > background, '它已经不在「背景认识（记忆）」里面了')
+  assert.ok(cards > exportAt, '读者要的是"往下挪"，所以它在导出之后')
+  // 空状态要有话说：这一节现在**总是**出现，没有卡片时不能是一片空白。
+  assert.match(source, /还没有人物卡 —— 补齐前文记忆之后会自动出现。/)
+})
+
+test('接线守卫：那一块预览已经从面板摘掉（但宿主路由保留）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // ⚠️ 它依次经历过三次形态：独立小节「AI 视角预览」→ 合并进「书友设定」→ **整块去掉**。
+  //    最后一次是读者 2026-09-27 的决定（只读视图，需要时可以从别处看）。
+  //    ⚠️ 两件事都要钉：**真的摘掉了** + **能力没丢** —— 否则下一次有人会以为是被误删的又加回来。
+  assert.equal(
+    source.includes("h('div', { className: 'drc-item-name' }, 'AI 视角预览')"),
+    false,
+    '「AI 视角预览」不该再是一个小节标题',
+  )
+  assert.equal(
+    source.includes('防剧透层真正会交给模型的全部内容'),
+    false,
+    '面板里不该再有那一块预览',
+  )
+  assert.equal(
+    source.includes('/context'),
+    false,
+    '客户端不该再调 /context（那正是被摘掉的那个入口）',
+  )
+  // 能力仍在宿主侧：路由保留（测试与"需要时自己看"都用它）。
+  const server = readFileSync(join(here, '..', 'lib', 'index.js'), 'utf8')
+  assert.ok(
+    server.includes("pattern: '/books/:bookId/context'"),
+    '宿主路由必须保留 —— 摘掉的是面板入口，不是这个能力',
+  )
 })
 
 test('接线守卫：提示条是浮动 toast（观感对标 lumina，长文不自动消失）', () => {
@@ -1948,7 +2021,7 @@ test('面板：书友设定与讨论历史都在 CompanionView 里真的渲染�
   // 纯静态检查——但拦的是真实的失效模式：区块写了却忘了放进返回的树里，
   // 组件冒烟测试也发现不了（它只保证"能跑通"，不保证"有这一块"）。
   const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  for (const label of ['书友设定（你写给 AI 的）', '讨论历史', '压缩背景认识', '可缓存前缀']) {
+  for (const label of ['书友设定（你写给 AI 的）', '讨论历史', '压缩背景认识', '人物卡']) {
     assert.ok(source.includes(label), `面板里缺少「${label}」`)
   }
   // 设定必须能存能读，走的是 /persona 这条路由。
@@ -2583,7 +2656,9 @@ test('竞态守卫：每个按书加载的资源各自装了守卫', () => {
     ['backgroundGuard', 2],
     ['personaGuard', 2],
     ['discussionsGuard', 2],
-    ['previewGuard', 2],
+    // ⚠️ `previewGuard` 已经**删掉**了，别再加回来：2026-09-27 预览整块从面板去掉，
+    //    那个资源连同它的守卫一起消失。守卫表也要跟着缩短 —— 否则它会要求一个
+    //    已经不存在的资源装作有守卫（这一条正是它刚才报的错）。
     // 打开书：目录与进度一起拉的 Promise.all，成功与失败两条路径。
     ['openGuard', 2],
     // ⚠️ `captureGuard` 已经**删掉**了，别再加回来：起稿现在是同步的（`captureNote`

@@ -18,13 +18,16 @@ import {
   appendDiscussion,
   DISCUSSIONS_LIMIT_DEFAULT,
   DISCUSSIONS_LIMIT_MAX,
+  findDiscussionMergeTarget,
   lastDiscussionAt,
   MAX_DISCUSSIONS,
+  mergeDiscussion,
   normalizeDiscussion,
   normalizeDiscussionLimit,
   parseDiscussions,
   readDiscussions,
   recentDiscussions,
+  sameDiscussionTopic,
 } from '../lib/host/discussions.js'
 import { createLibrary } from '../lib/host/library.js'
 import { BOOK, call, importBook, makeDir, startServer, TMP } from './helpers/server.mjs'
@@ -157,6 +160,59 @@ test('时间线：文件不存在时读回空数组（这是老数据能继续�
 
 //#endregion
 
+//#region 同一次交互并成一条
+//
+// 读者实测："一次记笔记的行为可能产生四五条讨论历史"。成因是三处各记一条：
+// 宿主在笔记落盘时记 `note`，客户端在"发去聊"记 `sent`、在"抓回回应"记 `reply`。
+// 它们说的是同一件事，所以现在**并进第一条**。
+
+test('时间线：判据分级（reply 那条没有摘抄，只退回比感想）', () => {
+  const at = '2026-09-27T10:00:00.000Z'
+  const note = normalizeDiscussion({ kind: 'note', chapterIndex: 3, excerpt: '他站在雪里。', thought: '这句真好', at })
+  const sent = normalizeDiscussion({ kind: 'sent', chapterIndex: 3, excerpt: '他站在雪里。', thought: '这句真好', at })
+  const reply = normalizeDiscussion({ kind: 'reply', chapterIndex: 3, thought: '这句真好', reply: '冷得能听见声音。', at })
+
+  assert.equal(sameDiscussionTopic(note, sent), true, '同章 + 同摘抄 = 同一件事')
+  assert.equal(sameDiscussionTopic(note, reply), true, 'reply 没有摘抄 → 退回比感想')
+  // 章号不同 = 不是同一件事。
+  const other = normalizeDiscussion({ kind: 'note', chapterIndex: 9, excerpt: '他站在雪里。', thought: '这句真好', at })
+  assert.equal(sameDiscussionTopic(note, other), false)
+  // 两边都拿不出可比字段 → **不合并**（宁可不并，也不要错并两条不同的讨论）。
+  assert.equal(sameDiscussionTopic(note, { chapterIndex: 3, excerpt: '', thought: '' }), false)
+  // 章号缺失 → 不合并。
+  assert.equal(sameDiscussionTopic({ chapterIndex: null, excerpt: 'x', thought: '' }, sent), false)
+})
+
+test('时间线：合并保留先到的 kind、补齐 reply、时间戳往前走', () => {
+  const note = normalizeDiscussion({ kind: 'note', chapterIndex: 3, excerpt: '他站在雪里。', thought: '这句真好', at: '2026-09-27T10:00:00.000Z' })
+  const reply = normalizeDiscussion({ kind: 'reply', chapterIndex: 3, thought: '这句真好', reply: '冷得能听见声音。', at: '2026-09-27T10:10:00.000Z' })
+
+  const merged = mergeDiscussion(note, reply)
+  assert.equal(merged.kind, 'note', 'kind 保持先到的那个（那一行代表这件事从哪一步开始）')
+  assert.equal(merged.excerpt, '他站在雪里。', '已有的字段不动')
+  assert.equal(merged.reply, '冷得能听见声音。', '后来的空字段补齐')
+  assert.equal(merged.at, reply.at, '时间戳往前走——"距上次聊过去多久"靠它')
+  assert.equal(note.reply, '', '不许改原对象')
+})
+
+test('时间线：合并有时间窗与回看条数（改天再记一次是两次真实讨论）', () => {
+  const note = { at: '2026-09-27T10:00:00.000Z', kind: 'note', chapterIndex: 3, excerpt: '同一段', thought: '', reply: '' }
+  const soon = { at: '2026-09-27T10:30:00.000Z', kind: 'sent', chapterIndex: 3, excerpt: '同一段', thought: '', reply: '' }
+  const nextDay = { at: '2026-09-28T10:00:00.000Z', kind: 'sent', chapterIndex: 3, excerpt: '同一段', thought: '', reply: '' }
+
+  assert.equal(findDiscussionMergeTarget([note], soon), 0, '半小时内 = 同一次交互')
+  assert.equal(findDiscussionMergeTarget([note], nextDay), -1, '隔了一天不该并')
+  // 只往前找固定条数：中间夹了别的话题就不并（窗口小到不会翻出上一个话题）。
+  const filler = Array.from({ length: 6 }, (_, i) => (
+    { at: '2026-09-27T10:31:00.000Z', kind: 'note', chapterIndex: 8, excerpt: `别的 ${i}`, thought: '', reply: '' }
+  ))
+  assert.equal(findDiscussionMergeTarget([note, ...filler], soon), -1)
+  // 时间戳读不出来时不合并（宁可多一条，也不要错并）。
+  assert.equal(findDiscussionMergeTarget([{ ...note, at: '不是时间' }], soon), -1)
+})
+
+//#endregion
+
 //#region 书库层
 
 test('书库：讨论记录能往返，且第 0 章不会被当成"没有章节"', () => {
@@ -179,8 +235,30 @@ test('书库：讨论记录能往返，且第 0 章不会被当成"没有章节"
   assert.equal(list[1].thought, '开篇的感受')
 })
 
-test('书库：记一条无意义的输入不落盘，但也不报错', () => {
-  const storageDir = makeDir('discussions-noop')
+test('书库：一次记笔记的三步只留一条历史（读者实测的"四五条"就是这个）', () => {
+  const storageDir = makeDir('discussions-merge')
+  const library = createLibrary({ storageDir, fallbackBlockChars: 4000, logger: {} })
+  library.ensureDirs()
+  const sourcePath = join(storageDir, 'src.txt')
+  writeFileSync(sourcePath, BOOK, 'utf8')
+  const { book } = library.importBook({ absPath: sourcePath, title: '测试书' })
+
+  // 一次真实的交互：写笔记 → 发去聊 → 抓回回应。
+  library.recordDiscussion(book.bookId, { kind: 'note', chapterIndex: 1, excerpt: '他站在雪里。', thought: '这句真好' })
+  library.recordDiscussion(book.bookId, { kind: 'sent', chapterIndex: 1, excerpt: '他站在雪里。', thought: '这句真好' })
+  library.recordDiscussion(book.bookId, { kind: 'reply', chapterIndex: 1, thought: '这句真好', reply: '冷得能听见声音。' })
+
+  const list = library.listDiscussions(book.bookId, 10)
+  assert.equal(list.length, 1, '三步 = 一条')
+  assert.equal(list[0].kind, 'note', 'kind 保持先到的那个')
+  assert.equal(list[0].reply, '冷得能听见声音。', '回应补进来了')
+
+  // ⚠️ 磁盘上也**真的**只有一行 —— 读取时才合并是不够的（那样文件仍会无限膨胀）。
+  const raw = readFileSync(join(storageDir, 'books', book.bookId, 'discussions.jsonl'), 'utf8')
+  assert.equal(raw.trim().split('\n').length, 1)
+})
+
+test('书库：记一条无意义的输入不落盘，但也不报错', () => {  const storageDir = makeDir('discussions-noop')
   const library = createLibrary({ storageDir, fallbackBlockChars: 4000, logger: {} })
   library.ensureDirs()
   const sourcePath = join(storageDir, 'src.txt')
