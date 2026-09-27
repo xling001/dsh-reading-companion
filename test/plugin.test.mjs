@@ -141,6 +141,38 @@ test('宿主半边：package.json 的 dsh 字段是宿主发现插件的方式',
   assert.ok(pkg.files.includes('lib'), 'lib 必须随包发布')
 })
 
+test('宿主半边：客户端半边真的依赖谁，就在 dsh.client.inject 里声明谁', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  const clientSource = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
+
+  const declared = pkg.dsh.client.inject
+  assert.ok(Array.isArray(declared), 'inject 必须是数组（缺省的空数组也是数组）')
+
+  // 为什么这条不是"把清单抄一遍"：清单是**从源码用法推出来的**。
+  //
+  // 客户端插件的加载顺序由 profile 的 `dsh.profile.bundles` 与各插件自己的
+  // `inject` 决定 —— 本仓库真出过这个事故：读者装了新插件之后，我们排在宿主
+  // ui-sidebar-right 之后才装配，`ctx.get('sessions')` 拿到 undefined，书架那行
+  // 的「跳过去」**永久**退化成不可点静态标（v1.68 §392–395）。惰性取用能让功能
+  // 不消失，但**声明**才是"让宿主知道我们依赖谁、按序装配"的那一半。
+  const REQUIRED = [
+    ['ctx.slots', '@deepseek-ai/dsh-client-ui-slots'],
+    ['ctx.sidebarRightTabs', '@deepseek-ai/dsh-client-ui-sidebar-right'],
+  ]
+  for (const [usage, packageName] of REQUIRED) {
+    if (!clientSource.includes(usage)) continue
+    assert.ok(declared.includes(packageName), `客户端用了 ${usage} 就必须声明 ${packageName}`)
+  }
+
+  // 反向：声明了却在源码里一个字节都找不到，是**僵尸依赖** —— 它只会让装配
+  // 多等一个（或永远等一个）包。新增声明时请把上表一起补上"它对应哪一处用法"。
+  for (const packageName of declared) {
+    const hit = REQUIRED.find(([, name]) => name === packageName)
+    assert.ok(hit !== undefined, `声明了 ${packageName}，但上表里没有它：请补上它对应源码里的哪一处用法`)
+    assert.ok(clientSource.includes(hit[0]), `声明了 ${packageName} 却没用过 ${hit[0]}`)
+  }
+})
+
 test('宿主半边：注册 prefix 路由并正确响应 /health', async () => {
   const host = await import(freshUrl('lib/index.js'))
   const { ctx, routes } = makeFakeHostContext()
@@ -164,6 +196,27 @@ test('宿主半边：注册 prefix 路由并正确响应 /health', async () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(body.version, pkg.version, '版本必须与 package.json 一致')
   assert.equal(typeof body.storageDir, 'string')
+  // 收件箱位置也回给客户端：面板要显示**宿主真正在扫的那个目录**，不能自己拼
+  // （拼的话 `inboxDir` 配置一改，界面指的与真被扫的就是两个地方 —— 读者照面板
+  // 提示放书、然后「扫描」什么也没有，看起来像插件的错）。
+  assert.equal(body.inboxDir, join(body.storageDir, 'inbox'), '默认收件箱必须落在 storageDir 下')
+})
+
+test('宿主半边：inboxDir 配置真的生效（v1.71 之前它写在 schema 里却从未被用）', async () => {
+  const host = await import(freshUrl('lib/index.js'))
+  const { ctx, routes, services } = makeFakeHostContext()
+
+  host.apply(ctx, { inboxDir: 'custom-inbox' })
+
+  const res = makeFakeResponse()
+  await routes[0].handler({ url: `${API_ROOT}/health`, method: 'GET' }, res)
+  const body = JSON.parse(res.body)
+  assert.equal(body.inboxDir, join(body.storageDir, 'custom-inbox'), '相对名要相对 storageDir 解析')
+  assert.equal(
+    services.readingCompanion.library.paths.inbox,
+    body.inboxDir,
+    '服务与 /health 必须是同一个值 —— 两处各算一遍就会漂',
+  )
 })
 
 test('宿主半边：apply 会发布 readingCompanion 服务并建好书库目录', async () => {

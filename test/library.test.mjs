@@ -11,10 +11,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { createLibrary } from '../lib/host/library.js'
+import { createLibrary, resolveInboxDir } from '../lib/host/library.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TMP_ROOT = join(HERE, '.tmp')
@@ -70,13 +70,16 @@ function makeFixture(options = {}) {
     // 只有显式传了才注入：默认不传 = 走"不限制导入路径"的真实默认值，
     // 否则测试会替生产代码做了一个它自己没做的决定。
     ...(options.importRoots === undefined ? {} : { importRoots: options.importRoots }),
+    ...(options.inboxDir === undefined ? {} : { inboxDir: options.inboxDir }),
   })
   library.ensureDirs()
 
   return {
     root,
     storageDir,
-    inboxDir,
+    // ⚠️ 回的是**库解析出来的**那一个，不是上面那个默认拼法：自定义 `inboxDir`
+    // 时两者不同，而测试要往"真正会被扫描的目录"里放文件。
+    inboxDir: library.paths.inbox,
     sourcePath,
     sourceText: text,
     library,
@@ -315,7 +318,7 @@ test('书库：移除书籍会清掉目录与绑定，且可保留笔记副本',
   }
 })
 
-test('书库：scanInbox 报告待导入文件并标记已导入', () => {
+test('书库：scanInbox 报告待导入文件；导入后那份被移进 .imported/，不再是扫描结果', () => {
   const f = makeFixture()
   try {
     writeFileSync(join(f.inboxDir, '另一本.txt'), Buffer.from(sampleBook(), 'utf8'))
@@ -325,8 +328,79 @@ test('书库：scanInbox 报告待导入文件并标记已导入', () => {
     assert.deepEqual(before.map((e) => e.name), ['另一本.txt'], '隐藏文件必须跳过')
     assert.equal(before[0].alreadyImported, false)
 
-    f.library.importBook({ absPath: before[0].absPath })
-    assert.equal(f.library.scanInbox()[0].alreadyImported, true, '同名同大小应被判为已导入')
+    const result = f.library.importBook({ absPath: before[0].absPath })
+
+    // 收件箱变干净了 —— 这就是"导入即归档"的全部意义：否则每扫一次都把已经导入
+    // 的东西再列一遍，目录只增不减，读者得自己动手清。
+    assert.deepEqual(f.library.scanInbox(), [], '归档之后不该再出现在扫描结果里')
+    // 但**没有删除**：字节仍在，只是搬进了 .imported/（点开头的目录，本来就免扫）。
+    assert.equal(typeof result.inboxMovedTo, 'string')
+    assert.equal(dirname(result.inboxMovedTo), join(f.inboxDir, '.imported'))
+    assert.equal(basename(result.inboxMovedTo), '另一本.txt')
+    assert.deepEqual(
+      readFileSync(result.inboxMovedTo),
+      readFileSync(join(f.library.paths.bookDir(result.book.bookId), 'source.txt')),
+      '归档的那份要与书库里保存的原始字节完全相同',
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：从别处导入的文件一个字节都不动（只有收件箱直属的那份才归档）', () => {
+  const f = makeFixture()
+  try {
+    const result = f.library.importBook({ absPath: f.sourcePath })
+
+    assert.equal(result.inboxMovedTo, null, '不在收件箱里的文件不该被搬')
+    assert.ok(existsSync(f.sourcePath), '原文件必须原地不动 —— 那可能正是读者唯一的那份')
+    assert.deepEqual(readFileSync(f.sourcePath), readFileSync(f.sourcePath))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：.imported/ 里同名不覆盖（第二次归档要改名）', () => {
+  const f = makeFixture()
+  try {
+    const inboxFile = join(f.inboxDir, '同名.txt')
+    writeFileSync(inboxFile, Buffer.from(sampleBook(), 'utf8'))
+    const first = f.library.importBook({ absPath: inboxFile })
+
+    // 同名的**另一份**文件（读者手滑放了两次，或者两本书恰好同名）。
+    writeFileSync(inboxFile, Buffer.from(`${sampleBook()}\n第四章 别的\n${prose('丁')}\n`, 'utf8'))
+    const second = f.library.importBook({ absPath: inboxFile })
+
+    assert.notEqual(first.book.bookId, second.book.bookId, '内容不同就是两本书')
+    assert.equal(basename(first.inboxMovedTo), '同名.txt')
+    assert.equal(basename(second.inboxMovedTo), '同名 (2).txt', '第二份要改名，不许覆盖第一份')
+    assert.ok(existsSync(first.inboxMovedTo) && existsSync(second.inboxMovedTo), '两份都在')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：收件箱位置支持相对与绝对两种写法（v1.71 之前这个配置完全无效）', () => {
+  const storage = join(TMP_ROOT, 'inbox-cfg-storage')
+
+  // 相对 → 相对 storageDir；空白/缺省 → 默认名。
+  assert.equal(resolveInboxDir(storage, 'books-in'), join(storage, 'books-in'))
+  assert.equal(resolveInboxDir(storage, '  '), join(storage, 'inbox'), '空白回落到默认名')
+  assert.equal(resolveInboxDir(storage, undefined), join(storage, 'inbox'))
+  assert.equal(resolveInboxDir(storage, 42), join(storage, 'inbox'), '非字符串一律回落')
+
+  // 绝对 → 原样。这就是"把收件箱放到别的盘、或放到一个看得见的目录"的写法
+  // （比搬整个 storageDir 安全：搬 storageDir 会让现有书架看起来空了）。
+  const absolute = join(TMP_ROOT, 'visible-inbox')
+  assert.equal(resolveInboxDir(storage, absolute), absolute)
+})
+
+test('书库：自定义 inboxDir 端到端真的被扫描', () => {
+  const f = makeFixture({ inboxDir: 'books-in' })
+  try {
+    assert.equal(f.inboxDir, join(f.storageDir, 'books-in'), '库解析出来的位置要跟着配置走')
+    writeFileSync(join(f.inboxDir, '放这里.txt'), Buffer.from(sampleBook(), 'utf8'))
+    assert.deepEqual(f.library.scanInbox().map((e) => e.name), ['放这里.txt'])
   } finally {
     f.cleanup()
   }

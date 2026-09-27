@@ -1093,6 +1093,222 @@ test('补齐文案：自动打底（大缺口只补了开头）必须说清"还�
 
 //#endregion
 
+test('导入说明：有问题才说，没问题闭嘴', async () => {
+  const { importNotes } = await internals()
+
+  // ① 干净的导入：按 BOM / 严格 UTF-8 判定 + 没有任何 warning → 一个字都不说。
+  //    这条守卫的是"不啰嗦"：一本每本书都挂着的说明会变成噪音，读者第二次就
+  //    学会无视它 —— 那时真出事的那本也一起被无视。
+  assert.deepEqual(importNotes({ encoding: 'utf-8', encodingConfidence: 'bom', warnings: [] }), [])
+  assert.deepEqual(importNotes({ encoding: 'utf-8', encodingConfidence: 'strict-utf8' }), [])
+
+  // ② 猜出来的编码必须说 —— 它是"你现在读到的可能是乱码"的唯一凭据。
+  const guessed = importNotes({
+    sourceName: '夜行.txt',
+    encoding: 'gb18030',
+    encodingConfidence: 'fallback',
+    warnings: ['GB18030 解码出现 3.1% 替换字符，可能仍是乱码'],
+  })
+  assert.equal(guessed.length, 3, '来源文件 + 编码 + 那一条 warning')
+  assert.equal(guessed[0], '来源文件：夜行.txt')
+  assert.equal(guessed[1], '编码：gb18030（不是合法 UTF-8，回退判定）')
+  assert.equal(guessed[2], 'GB18030 解码出现 3.1% 替换字符，可能仍是乱码')
+
+  // ③ heuristic（按字节分布猜）与 fallback（严格 UTF-8 失败后回落）是两种说法，
+  //    不能混成一句 —— 读者据此判断的"可疑程度"本来就不一样。
+  assert.match(importNotes({ encoding: 'utf-16le', encodingConfidence: 'heuristic' })[0], /按字节分布猜的/)
+
+  // ④ 「定长分段」不许在这里再说一遍：目录页顶部已经单独说过（`strategy ===
+  //    'fixed-blocks'` 的分支）。同一件事说两遍，读者会以为是两件事。
+  const lines = importNotes({
+    sourceName: 'x.txt',
+    encoding: 'utf-8',
+    encodingConfidence: 'bom',
+    warnings: ['未检测到章节结构'],
+    strategy: 'fixed-blocks',
+  })
+  assert.deepEqual(lines, ['来源文件：x.txt', '未检测到章节结构'])
+  assert.ok(!lines.some((line) => line.includes('定长')), '定长分段那句归目录页顶部，不许重复')
+
+  // ⑤ 脏数据不许让目录页白屏（外部工具改坏了 library.json 是很现实的一种）。
+  assert.deepEqual(importNotes(null), [])
+  assert.deepEqual(importNotes(undefined), [])
+  assert.deepEqual(importNotes('不是对象'), [])
+  assert.deepEqual(importNotes({ warnings: '不是数组' }), [])
+  assert.deepEqual(importNotes({ warnings: ['', '   ', 42] }), [])
+})
+
+test('接线守卫：目录页真的渲染了「导入说明」（数据早在书架上，缺的只是这一处入口）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // ⚠️ 为什么只能静态断言：冒烟渲染用的 hook 替身只取初始值、也不执行点击，
+  //    所以"展开后画出列表"那一支在冒烟里跑不到。而这里真正怕的失效模式是
+  //    「组件写好了但没挂上去」——纯接线问题，切片断言正是对症的工具。
+  const marker = source.indexOf('导入说明排在定长分段那句之上')
+  assert.ok(marker > 0, '找不到 TocView 里挂 ImportNotes 的那一处')
+  const block = source.slice(marker, marker + 300)
+  assert.ok(block.includes('h(ImportNotes, { book })'), '目录页要把当前这本书交给 ImportNotes')
+
+  // 这条功能的**全部**数据都来自 `/library` 的条目（`library.list()` 是 `...book`
+  // 展开的，本来就带 warnings / encoding / encodingConfidence / sourceName）。
+  // 所以它不该新增任何后端面 —— 这一条钉住"零后端"这个说法不被后来的改动推翻。
+  assert.ok(source.includes('function importNotes'), '判定规则要是纯函数（那才是可测的一半）')
+  assert.ok(!source.includes('/import-notes'), '不许为它新增后端路由')
+})
+
+test('收件箱路径：以宿主答复为唯一权威，配置改了要跟着变', async () => {
+  const { resolveInboxPath } = await internals()
+
+  // ① 宿主解析好的那个是唯一权威（`/health` 的 inboxDir）。
+  assert.equal(resolveInboxPath({ storageDir: 'C:\\x', inboxDir: 'D:\\收件箱' }), 'D:\\收件箱')
+  // ② 老宿主（没有 inboxDir）时回落，但**至少跟着 config 走**，不再永远写死 'inbox'。
+  assert.equal(
+    resolveInboxPath({ storageDir: 'C:\\x', config: { inboxDir: 'books-in' } }),
+    'C:\\x\\books-in',
+  )
+  // ③ 分隔符跟着 storageDir 走（POSIX 上写死反斜杠，显示就是错的）。
+  assert.equal(resolveInboxPath({ storageDir: '/home/x/.dsh/rc' }), '/home/x/.dsh/rc/inbox')
+  // ④ 什么都拿不到 → null。界面据此不显示这一块，而不是显示一个假路径。
+  assert.equal(resolveInboxPath(null), null)
+  assert.equal(resolveInboxPath({}), null)
+})
+
+test('打开文件夹：靠清单挑应用，不靠平台判断', async () => {
+  const { pickFileManagerApp, FILE_MANAGER_APP_IDS } = await internals()
+
+  assert.deepEqual([...FILE_MANAGER_APP_IDS], ['explorer', 'finder', 'filemanager'])
+  assert.equal(pickFileManagerApp(['vscode', 'explorer', 'finder']), 'explorer', '优先 explorer')
+  assert.equal(pickFileManagerApp(['finder']), 'finder')
+  assert.equal(pickFileManagerApp(['filemanager', 'code']), 'filemanager')
+  // 候选一个都没有 / 形状不对 → null：调用方据此**明说**，而不是让按钮点下去没反应。
+  assert.equal(pickFileManagerApp(['vscode', 'terminal']), null)
+  assert.equal(pickFileManagerApp(null), null)
+  assert.equal(pickFileManagerApp('explorer'), null)
+})
+
+test('导入结果文案：归档了要说，没归档不许说', async () => {
+  const { importOutcomeText } = await internals()
+  const book = { title: '夜行', chapterCount: 3 }
+
+  assert.equal(importOutcomeText({ book }), '已导入《夜行》· 3 章')
+  assert.equal(
+    importOutcomeText({ book, inboxMovedTo: 'C:\\x\\.imported\\夜行.txt' }),
+    '已导入《夜行》· 3 章；收件箱里那份已移到 .imported/（没有删除）',
+  )
+  // 从别处导入（`inboxMovedTo` 是 null）时**不许**出现归档那句话 ——
+  // 那是"声称一件没发生的事"。
+  assert.ok(!importOutcomeText({ book, inboxMovedTo: null }).includes('.imported'))
+  assert.equal(importOutcomeText({ book, deduped: true }), '《夜行》已在书架里（同一份文件）')
+  // 响应缺字段也不许抛（界面不该因为一句话而白屏）。
+  assert.equal(importOutcomeText({}), '已导入《这本书》· 0 章')
+})
+
+test('接线守卫：收件箱的两个新入口在，且路径不再自己拼', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // ⚠️ 这条钉的是一个**真出过的形状**：面板从前写死 `${health.storageDir}\inbox`。
+  // 它当时"碰巧对"，但只要有人让宿主认自己的 `inboxDir` 配置（v1.71 就是这么做的），
+  // 面板立刻指向另一个目录 —— 读者照面板提示放书、然后「扫描」什么也没有。
+  assert.ok(!source.includes('storageDir}\\\\inbox'), '不许再自己拼收件箱路径')
+  assert.ok(source.includes('resolveInboxPath(health)'), '要从宿主的答复里取')
+
+  // 两个入口：复制路径（读者拿去资源管理器粘贴）与打开导入目录（交给系统打开）。
+  assert.ok(source.includes("'复制路径'"), '复制路径按钮要在')
+  assert.ok(source.includes("'打开导入目录'"), '打开目录按钮要在')
+  assert.ok(source.includes('navigator.clipboard.writeText'), '复制要走剪贴板 API')
+  assert.ok(source.includes('OPEN_IN_APP_OPEN_ROUTE'), '打开目录要走宿主的 open-in-app 契约')
+
+  // 归档必须**事先**交代（否则读者回头发现文件不见了，第一反应是插件弄丢了）。
+  assert.ok(source.includes('.imported/'), '界面上要交代归档到哪了')
+
+  // 排布与文案（读者指定）：三颗动作**排成一行**；手动导入那个框要说清自己是干什么的。
+  // ⚠️ 这条一度被我写成"竖排一列"（读者 2026-09-27 更正：他最初的意思只是把
+  //    「扫描导入目录」提到另外两颗所在的那一行）。竖排会让整块**太占空间**，
+  //    所以两处都钉死：JS 里三颗属于同一个容器、CSS 里那个容器不许是 column。
+  const actionsAt = source.indexOf("className: 'drc-import-actions'")
+  assert.ok(actionsAt > 0, '找不到收件箱动作容器')
+  const actionsBlock = source.slice(actionsAt, actionsAt + 1600)
+  for (const label of ['复制路径', '打开导入目录', '扫描导入目录']) {
+    assert.ok(actionsBlock.includes(`'${label}'`), `${label} 要和另外两颗在同一个容器里（一行）`)
+  }
+  const cssAt = source.indexOf('.drc-import-actions {')
+  assert.ok(cssAt > 0, '找不到 .drc-import-actions 的样式规则')
+  const cssRule = source.slice(cssAt, source.indexOf('}', cssAt))
+  assert.ok(!cssRule.includes('column'), '三颗按钮要在一行，不许竖排（读者明确否掉了竖排）')
+
+  assert.ok(source.includes('手动导入书籍路径：'), '手动导入的输入框要写清这是什么')
+  assert.ok(source.includes("'手动导入'"), '那颗按钮叫「手动导入」')
+  // 说明必须能换行：`.drc-item-sub` 是**单行省略号**样式，用它就会把"文件搬去哪"
+  // 那半句截掉（真机截图里就是「…导入…」）。
+  assert.ok(source.includes("className: 'drc-import-hint'"), '导入说明要用可换行的样式')
+})
+
+test('接线守卫：选中高亮只改背景；阅读区补偿滚动条占位', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // ① 选中高亮**只设 background、不许设 color**：浏览器默认会给一层"反色"，我们再叠
+  //    一层就等于两层颜色互相打架，在深浅主题切换时最容易失控（文字色交给主题）。
+  const selAt = source.indexOf('.drc-root ::selection')
+  assert.ok(selAt > 0, '找不到选中高亮的规则')
+  const selRule = source.slice(selAt, source.indexOf('}', selAt))
+  assert.ok(selRule.includes('background:'), '选中高亮要有背景色')
+  assert.ok(!/(^|[^-])color:/.test(selRule), '选中高亮不许动文字颜色')
+
+  // ② 阅读区：滚动那个 div 必须带上补偿类。`max-width: 36em; margin: 0 auto` 的居中
+  //    是在**扣掉竖直滚动条之后**的宽度里做的，而滚动条只占右侧 —— 不补偿就会整体偏左
+  //    （读者截图圈住左右两边，说的正是这个）。
+  assert.ok(source.includes('scrollbar-gutter: stable both-edges'), '要有滚动条占位补偿')
+  assert.ok(source.includes("'drc-body drc-body-reader'"), '阅读区的滚动容器要挂上补偿类')
+  // 反过来也要钉：**只有**阅读区挂它。书架/目录/笔记是左对齐的，加左侧空槽会凭空多一块空白。
+  assert.equal(
+    (source.match(/drc-body drc-body-reader/g) ?? []).length,
+    1,
+    '只该有一处（阅读区）用这个类',
+  )
+})
+
+test('接线守卫：按钮的面保持透明（宿主的 button-*-fill 是"浮起式白按钮"，不是我们这种描边小按钮）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // 由来：v2.1.11 我把按钮的面接上了宿主的 `button-elevated-fill` —— 那一档在**浅色**下
+  // 就是 `#fff`（它是给"浮起的白色按钮"用的另一个按钮物种），于是面板里那些描边式小按钮
+  // 全成了白块，读者真机否掉："按钮的颜色变白了，这一部分不用改。"
+  // 所以这条钉住的是**决定**，不是实现细节：要改它，得先想起这段理由。
+  assert.ok(source.includes('--drc-raise: transparent'), '按钮的面要保持透明（读者否掉了白色按钮面）')
+  assert.ok(
+    !/--drc-raise:\s*var\(--dsw-alias-button-[a-z-]*fill/.test(source),
+    '不许把按钮的面接回宿主的 button-*-fill（那是白色浮起按钮的面）',
+  )
+})
+
+test('样式模板：注释里不许出现反引号（它会把 CSS 的模板字符串提前结束）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // 这条守卫的由来（本仓库**第四次**同类事故）：CSS 住在一个模板字符串里，而注释里
+  // 只要出现一个反引号，字面量就在那里**提前结束** —— 后半截样式变成 JS 表达式，
+  // 报出来的是一个跟样式毫不相干的 `ReferenceError: xxx is not defined`（下一次是
+  // 91 条用例一起红）。
+  // ⚠️ `node --check` **挡不住它**：那种写法语法上完全合法，只有真的加载模块才会炸。
+  // 所以这里用一个结构性断言来探测，而不是靠"下次小心点"。
+  const OPEN = 'const CSS_TEXT = `'
+  const open = source.indexOf(OPEN)
+  assert.ok(open > 0, '找不到样式模板字符串')
+  const close = source.indexOf('`', open + OPEN.length)
+  assert.ok(close > 0, '样式模板字符串没有结束的反引号')
+  const body = source.slice(open, close)
+
+  // ① 结束的那个反引号必须**单独占一行**。插在注释里的反引号落在行中间，于是它会被
+  //    当成结束符 —— 这条断言就是那个错误的探测器。
+  assert.equal(source[close - 1], '\n', '样式字符串的结束反引号要单独占一行（注释里混进反引号了？）')
+  // ② 抽出来的正文必须以一条规则的 `}` 收尾，否则说明它被提前截断了。
+  assert.ok(body.trimEnd().endsWith('}'), `样式字符串似乎被截断了（只有 ${body.length} 字符）`)
+})
+
 //#region 组件冒烟渲染
 
 /**
@@ -1156,6 +1372,12 @@ function componentCases(internalsApi) {
     ['TocView（有目录）', internalsApi.TocView, { book, chapters, progress: { chapterIndex: 1, charOffset: 5 }, loading: false, error: null, onBack: noop, onPick: noop, onOpenCompanion: noop, onOpenNotes: noop }],
     ['TocView（定长分段告警）', internalsApi.TocView, { book: { ...book, strategy: 'fixed-blocks' }, chapters, progress: null, loading: false, error: null, onBack: noop, onPick: noop, onOpenCompanion: noop, onOpenNotes: noop }],
     ['TocView（错误）', internalsApi.TocView, { book, chapters: [], progress: null, loading: false, error: '炸了', onBack: noop, onPick: noop, onOpenCompanion: noop, onOpenNotes: noop }],
+    // 导入说明：一本"编码是猜的 + 有 warning"的书（折条会真的画出来），
+    // 以及一本干净的（组件必须返回 null —— 不留空壳，这条也有专测）。
+    ['ImportNotes（有说明）', internalsApi.ImportNotes, { book: { ...book, sourceName: '夜行.txt', encoding: 'gb18030', encodingConfidence: 'fallback', warnings: ['GB18030 解码出现 3.1% 替换字符，可能仍是乱码'] } }],
+    ['ImportNotes（无事可交代）', internalsApi.ImportNotes, { book }],
+    ['ImportNotes（没有书）', internalsApi.ImportNotes, {}],
+    ['TocView（带导入说明）', internalsApi.TocView, { book: { ...book, sourceName: '夜行.txt', encoding: 'gb18030', encodingConfidence: 'heuristic' }, chapters, progress: null, loading: false, error: null, onBack: noop, onPick: noop, onOpenCompanion: noop, onOpenNotes: noop }],
     ['ReaderView', internalsApi.ReaderView, { book, chapters, chapterIndex: 0, initialOffset: 0, onBack: noop, onNavigate: noop, onOpenCompanion: noop, onOpenNotes: noop, onCaptureNote: noop }],
     ['CompanionView', internalsApi.CompanionView, { book, sessionId: 'session-abc', onBack: noop }],
     ['CompanionView（无 session）', internalsApi.CompanionView, { book, onBack: noop }],
@@ -1207,7 +1429,7 @@ test('组件冒烟：每个组件都真的被覆盖到（防止上面那条用�
   }
   // 逐个点名：每个视图都必须**真的在这次冒烟里被执行过**，
   // 而不只是出现在用例表里。嵌套执行（比如 ReaderPanel → ShelfView）也算数。
-  for (const key of ['ReaderPanel', 'ShelfView', 'TocView', 'ReaderView', 'CompanionView', 'NotesView', 'NoteList', 'TopBar']) {
+  for (const key of ['ReaderPanel', 'ShelfView', 'TocView', 'ImportNotes', 'ReaderView', 'CompanionView', 'NotesView', 'NoteList', 'TopBar']) {
     assert.ok(seen.has(internalsApi[key]), `${key} 没有被冒烟用例执行到`)
   }
 })
@@ -1440,6 +1662,38 @@ test('字体偏好：任何垃圾输入都夹到合法区间，且永不抛错',
   // 字号取整、行高留一位小数（免得连点产生 1.9000000000000001）。
   assert.equal(clampFontPrefs({ size: 17.6 }).size, 18)
   assert.equal(clampFontPrefs({ lineHeight: 1.83 }).lineHeight, 1.8)
+
+  // 纸感：0–30 的整数，越界夹住，非数值回 0（"一个字节都不加"）。
+  const { PAPER_MAX } = await internals()
+  assert.equal(PAPER_MAX, 30)
+  assert.equal(clampFontPrefs({}).paper, 0)
+  assert.equal(clampFontPrefs({ paper: 999 }).paper, 30)
+  assert.equal(clampFontPrefs({ paper: -5 }).paper, 0)
+  assert.equal(clampFontPrefs({ paper: 'abc' }).paper, 0)
+  assert.equal(clampFontPrefs({ paper: Number.NaN }).paper, 0)
+  assert.equal(clampFontPrefs({ paper: 12.6 }).paper, 13)
+})
+
+test('纸感：0 时**一个字节都不加**（空样式对象），非 0 时才由宿主现值现算', async () => {
+  const { paperStyleOf } = await internals()
+
+  // ⚠️ 这条是"不打架"的可证伪定义：关掉它时，内联样式与"没有这个功能"**逐元素相同**。
+  //    所以 0 必须返回**空对象**，而不是返回一个 background: 之类的等价值。
+  assert.deepEqual(paperStyleOf({ paper: 0 }), {})
+  assert.deepEqual(paperStyleOf({}), {})
+  assert.deepEqual(paperStyleOf({ paper: -5 }), {})
+  assert.deepEqual(paperStyleOf(null), {})
+
+  // 打开时：掺进去的是宿主 bg-base 的**现值**（经我们自己的别名），只贡献比例；
+  // 暖色那一半来自 --drc-paper（浅色奶油 / 深色暖炭，由 CSS 分极性）——
+  // 所以这里**不许**出现任何写死的颜色，也不许直接引用宿主 token（别名层才声明借用）。
+  const style = paperStyleOf({ paper: 20 })
+  assert.equal(style.background, 'color-mix(in oklab, var(--drc-paper-base) 80%, var(--drc-paper))')
+  assert.ok(!/#[0-9a-fA-F]{3,8}/.test(style.background), '纸感里不许写死颜色')
+  assert.ok(!/--dsw-/.test(style.background), '纸感只许引用我们自己的别名（借用清单在别名层）')
+
+  // 上限与边界：30% 就是最浓。
+  assert.equal(paperStyleOf({ paper: 30 }).background.includes(' 70%,'), true)
 })
 
 test('字体偏好：未知字体族回落到默认，而不是渲染出空字体栈', async () => {
@@ -1476,7 +1730,7 @@ test('字体偏好：localStorage 往返，坏了也能自愈', async () => {
 
     // 往返。
     saveFontPrefs({ size: 22, lineHeight: 2.2, family: 'kai' })
-    assert.deepEqual(loadFontPrefs(), { size: 22, lineHeight: 2.2, family: 'kai' })
+    assert.deepEqual(loadFontPrefs(), { size: 22, lineHeight: 2.2, family: 'kai', paper: 0 })
     assert.ok(store.has(FONT_PREFS_KEY))
 
     // 存里是坏 JSON → 回默认，而不是把阅读界面打崩。
@@ -1485,7 +1739,7 @@ test('字体偏好：localStorage 往返，坏了也能自愈', async () => {
 
     // 存里是合法 JSON 但字段离谱 → 夹住。
     store.set(FONT_PREFS_KEY, JSON.stringify({ size: 999, lineHeight: -1, family: 'zzz' }))
-    assert.deepEqual(loadFontPrefs(), { size: 30, lineHeight: 1.2, family: DEFAULT_FONT_PREFS.family })
+    assert.deepEqual(loadFontPrefs(), { size: 30, lineHeight: 1.2, family: DEFAULT_FONT_PREFS.family, paper: 0 })
   } finally {
     delete globalThis.localStorage
   }

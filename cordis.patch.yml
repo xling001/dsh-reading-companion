@@ -13,7 +13,21 @@
         # Kept empty on purpose: the default is resolved through the host's
         # `dshHomePath()` service so profile moves carry the library along.
         storageDir: ''
-        # Drop-box scanned by the importer. Relative to storageDir.
+        # Drop-box scanned by the importer, and the address the panel shows you.
+        #
+        # A RELATIVE path is resolved against `storageDir` (the default). An
+        # ABSOLUTE path is used as-is -- that is the way to put the drop-box on
+        # another drive, or somewhere you can actually see it, without moving
+        # the whole library (moving `storageDir` makes the existing shelf look
+        # empty until you relocate it by hand).
+        #
+        # After a successful import the copy in here is MOVED into
+        # `.imported/` inside this folder -- never deleted, and it stops
+        # showing up in "scan the drop-box". Files imported from anywhere else
+        # are left completely untouched.
+        #
+        # NOTE: this key did nothing at all before v1.71 -- it was declared here
+        # and in the config schema, but the host hard-coded `storageDir/inbox`.
         inboxDir: 'inbox'
         # Fallback chapter size (in characters) when a TXT has no usable
         # chapter headings and the indexer degrades to fixed blocks.

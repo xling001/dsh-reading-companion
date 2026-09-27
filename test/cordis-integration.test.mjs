@@ -231,3 +231,95 @@ test('真实 cordis：插件能在真宿主服务上装配，且三个 inject �
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/**
+ * 我们借用的宿主 token，必须**真的存在**。
+ *
+ * ## 这条守卫的由来（v1.73 核出来的一件很不体面的事）
+ *
+ * 面板从前用了 12 个 `--dsw-*` 名字（`--dsw-accent` / `--dsw-border-subtle` /
+ * `--dsw-text-primary` / `--dsw-surface-*` / `--dsw-font-mono` …），**宿主一个都没有**。
+ * 它们全部落进 `var(名字, 回落)` 的回落里，于是：
+ *   · 面板其实一直在用**写死的颜色**，从不跟随宿主主题、也不跟随换肤插件；
+ *   · 而那些回落是我们**自己发明**的一套（一个宿主调色板里没有的蓝、
+ *     bootstrap 系的状态色、比宿主重 2–10 倍的分割线）；
+ *   · 它之所以两个月没被发现，是因为**两个错误互相抵消**（宿主写死、我们也写死）。
+ *
+ * 这类错误靠"看界面"发现不了（界面看着挺正常），也靠 `node --check` 发现不了
+ * （字面量完全合法）。唯一可靠的探测器就是**拿真宿主的 token 表逐个对**。
+ *
+ * 找不到 DSH 安装时**跳过而非失败**（开源仓库不能因为"没装 DSH"就变红），
+ * 与上面那些集成用例同一套机制（`DSH_APP_NODE_MODULES` / `test/.dsh-app-path`）。
+ */
+test('真实宿主：样式里借用的 --dsw-* 名字必须真的存在（别名层 + 一份只会变短的待归还清单）', async (t) => {
+  const themePath = join(DSH_APP, '@deepseek-ai', 'dsh-client-ui-theme', 'lib', 'client.js')
+  if (!existsSync(themePath)) {
+    t.skip(`未找到 dsh-client-ui-theme（${themePath}），跳过宿主 token 核对`)
+    return
+  }
+  const hostTokens = new Set(
+    [...readFileSync(themePath, 'utf8').matchAll(/--dsw-[a-z0-9-]+/g)].map((m) => m[0]),
+  )
+  // 先证伪"提取逻辑本身有效"：正则一旦写歪，下面全部会退化成空转并通过。
+  assert.ok(hostTokens.size > 100, `宿主的 token 表看起来不对（只提到 ${hostTokens.size} 个）`)
+
+  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
+
+  // ① 语义别名层里的每一个名字都不许是幻觉 —— 这一层是"我们声明借用了什么"的清单。
+  const aliasStart = source.indexOf('--drc-ink:')
+  const aliasEnd = source.indexOf('.drc-root {', aliasStart)
+  assert.ok(aliasStart > 0 && aliasEnd > aliasStart, '找不到语义别名层')
+  const aliasBlock = source.slice(aliasStart, aliasEnd)
+  const borrowed = [...new Set([...aliasBlock.matchAll(/--dsw-[a-z0-9-]+/g)].map((m) => m[0]))]
+  assert.ok(borrowed.length >= 6, `别名层没抽到东西（只 ${borrowed.length} 个），检查标记`)
+  for (const name of borrowed) {
+    assert.ok(hostTokens.has(name), `别名层借用了宿主没有的 ${name}`)
+  }
+
+  // ② 别名层之外还在用的旧名字：列成**待归还清单**。这份清单只许变短 ——
+  //    修掉一批就从这里删一批，而任何**新增**的旧名字都会当场变红。
+  //    ✅ v2.1.11：**已清空**。12 个旧名字全部归还（v2.1.7 强调/次级文字 → v2.1.8 分割线
+  //    → v2.1.9 状态色 → v2.1.11 面与字体族）。这张表留着给下一批：新增的旧名字
+  //    必须显式登记进来，而不是悄悄溜过去。
+  const PENDING = []
+  const outside = [
+    ...new Set([...source.replace(aliasBlock, '').matchAll(/--dsw-[a-z0-9-]+/g)].map((m) => m[0])),
+  ]
+  assert.deepEqual(outside.sort(), [...PENDING].sort(), '别名层之外只允许出现"待归还"清单里的名字')
+  for (const name of PENDING) {
+    // 反方向也要钉：清单里那些名字**确实不存在**才叫"待归还"。哪天宿主真加上了
+    // 同名 token，这条会红 —— 提醒我们该归还了，而不是继续说"宿主没有"。
+    assert.ok(!hostTokens.has(name), `${name} 其实存在于宿主里，那它就该被归还并从清单里删掉`)
+  }
+
+  // ③ 颜色字面量只许待在 var() 的回落里。从前唯一违例的是实体卡那条 #3a3a3a
+  //    （不分主题：深色下几乎看不见、浅色下是一条黑杠）。这条比逐个列禁止名单更耐用。
+  //    ⚠️ 两条例外，都是刻意的：
+  //      · **注释里的颜色** —— 注释引用一个颜色是合法的文档（"v1.52 之前这里是写死的
+  //        某个琥珀色"、"借过来会变成 #fff 的白块"），它不参与渲染；
+  //      · **别名层里我们自己的颜色**（--drc-…: <字面量>）—— 别名层正是"我们声明颜色"
+  //        的唯一地方。今天那里只有纸感的两个极（浅色奶油 / 深色暖炭）。
+  //    ⚠️ 注释识别必须**带块状态**：本仓库的 CSS 块注释续行**不带星号**（只是缩进对齐），
+  //    只看行首标记会把续行当成代码 —— 那正是第一版守卫误报的原因。
+  const OWN_ALIAS = /^\s*--drc-[a-z0-9-]+:/
+  const offenders = []
+  let inBlockComment = false
+  for (const line of source.split('\n')) {
+    const trimmed = line.trim()
+    const opens = line.includes('/*')
+    const closes = line.includes('*/')
+    const isComment = inBlockComment || trimmed.startsWith('//') || trimmed.startsWith('*') || opens
+    if (
+      !isComment
+      && !OWN_ALIAS.test(line)
+      && /#[0-9a-fA-F]{3,8}\b|rgba?\([0-9]/.test(line)
+      && !line.includes('var(--')
+    ) {
+      offenders.push(line)
+    }
+    // 单行注释（`/* … */` 同行闭合）不改变状态。
+    if (opens && !closes) inBlockComment = true
+    else if (closes) inBlockComment = false
+  }
+  assert.deepEqual(offenders, [], '颜色字面量必须待在 var() 回落里（或写进别名层 / 用语义别名）')
+})
