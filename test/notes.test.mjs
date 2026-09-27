@@ -23,6 +23,7 @@ import {
   deleteDraft,
   emptyNotesHeader,
   listDrafts,
+  locateNoteAnchor,
   noteHeading,
   paginateNotes,
   parseNotes,
@@ -77,6 +78,147 @@ test('渲染：显式传了 reply 才出现，且内容原样保留', () => {
   })
   assert.match(block, /\*\*AI 回应\*\*：是啊，冷得能听见声音。/)
 })
+
+//#region 文本锚（摘抄前后文 + 源文件指纹）
+
+test('文本锚：`>` 与 `<` 必须转义，否则整条笔记会「落盘了却读不回来」', () => {
+  // 这是加文本锚时发现的洞：块标记的正则是 `[^>]*?-->`，属性值里只要出现 `>`，
+  // 标记行就被截断 —— 笔记**落了盘却解析不出来**（而 notes.md 是"只追加、永不重写"
+  // 的，写坏一条就永远坏在那儿）。
+  // 从前的字段（id / created / chapter / offset / tags）恰好都不可能含 `>`，
+  // 所以这个洞一直没被踩到；而摘抄前后文是**正文原样**，中文正文里出现
+  // `<` / `>`（引用标记、箭头、代码片段）完全可能。
+  const prefix = '他说：<记住> 这句'
+  const suffix = '> 然后他走了'
+  const markdown = `${emptyNotesHeader('夜行')}\n${renderNoteBlock({
+    id: 'n1',
+    excerpt: '正文摘抄',
+    thought: '感想',
+    chapterIndex: 2,
+    charOffset: 10,
+    sourceSha: 'abcdef012345',
+    quotePrefix: prefix,
+    quoteSuffix: suffix,
+  })}\n`
+
+  const notes = parseNotes(markdown)
+  assert.equal(notes.length, 1, '含 `>` 的属性值不该让整条笔记消失')
+  assert.equal(notes[0].quotePrefix, prefix, '前后文要能原样往返')
+  assert.equal(notes[0].quoteSuffix, suffix)
+  assert.equal(notes[0].sourceSha, 'abcdef012345')
+  assert.equal(notes[0].excerpt, '正文摘抄')
+})
+
+test('文本锚：没有锚点时标记行不膨胀；旧笔记解析成空串', () => {
+  const bare = renderNoteBlock({ excerpt: 'x', thought: 'y' })
+  for (const key of [' src=', ' pre=', ' post=']) {
+    assert.ok(!bare.includes(key), `没有锚点就不该写出 ${key.trim()} 属性`)
+  }
+
+  // v2.1.5 之前写的笔记没有这三个属性 → 解析成**空串**（不是 undefined/null）：
+  // 面板与导出只关心"有没有"，少一种形态就少一处分支。
+  const legacy = parseNotes([
+    emptyNotesHeader('夜行'),
+    '<!-- drc-note:begin id=n0 created=2020-01-01T00:00:00.000Z chapter=1 offset=5 tags=a -->',
+    '### 第2章 夜 #a',
+    '',
+    '> 旧的',
+    '',
+    '<!-- drc-note:end -->',
+    '',
+  ].join('\n'))
+  assert.equal(legacy.length, 1)
+  assert.deepEqual(
+    [legacy[0].sourceSha, legacy[0].quotePrefix, legacy[0].quoteSuffix],
+    ['', '', ''],
+  )
+})
+
+//#endregion
+
+//#region 文本锚核对（reindex 用它判断"笔记会不会漂"）
+
+/**
+ * 造一份可控的正文与目录：两章，正文是**互不相同**的字母串 —— 这样"这段摘抄
+ * 在不在原地"能一眼判定，不会因为重复字符而误判。
+ */
+const ANCHOR_TEXT = `第一章 雪\nABCDEFGHIJ\n第二章 夜\nKLMNOPQRST\n`
+const ANCHOR_CHAPTERS = [
+  { startChar: 6, endChar: 16 }, // ABCDEFGHIJ
+  { startChar: 23, endChar: 33 }, // KLMNOPQRST
+]
+
+test('文本锚核对：原位 / 同章挪动 / 邻近章节 —— 三种都要说清「在哪」', () => {
+  const base = { chapterIndex: 0, charOffset: 2, excerpt: 'CDE', quotePrefix: 'AB', quoteSuffix: 'FGH' }
+
+  // ① 原位：偏移处逐字相同 → intact，且报回同一个偏移。
+  const intact = locateNoteAnchor(base, ANCHOR_TEXT, ANCHOR_CHAPTERS)
+  assert.deepEqual(
+    [intact.status, intact.chapterIndex, intact.charOffset],
+    ['intact', 0, 2],
+  )
+
+  // ② 同一章里挪了位置（偏移变了）→ moved，报回新偏移。
+  const movedInChapter = locateNoteAnchor({ ...base, charOffset: 6 }, ANCHOR_TEXT, ANCHOR_CHAPTERS)
+  assert.deepEqual(
+    [movedInChapter.status, movedInChapter.chapterIndex, movedInChapter.charOffset, movedInChapter.sameChapter],
+    ['moved', 0, 2, true],
+  )
+
+  // ③ 挪到了**邻近章节**（±2 之内）→ moved，报回新章号。（不做全书扫描）
+  const movedChapter = locateNoteAnchor(
+    { ...base, chapterIndex: 0, charOffset: 0, excerpt: 'NOP', quotePrefix: 'LM', quoteSuffix: 'QR' },
+    ANCHOR_TEXT,
+    ANCHOR_CHAPTERS,
+  )
+  assert.deepEqual(
+    [movedChapter.status, movedChapter.chapterIndex, movedChapter.charOffset, movedChapter.sameChapter],
+    ['moved', 1, 3, false],
+  )
+
+  // ④ 邻近都找不到 → lost（**不猜**）。
+  const lost = locateNoteAnchor({ ...base, excerpt: 'ZZZ' }, ANCHOR_TEXT, ANCHOR_CHAPTERS)
+  assert.equal(lost.status, 'lost')
+  assert.equal(lost.reason, 'NOT_FOUND')
+})
+
+test('文本锚核对：同一段出现多次、前后文也分不出时**不猜**，报 lost', () => {
+  // 一章里 'ABC' 出现两次，且两次后面的字符都是 'X' → 前后文无法唯一确定。
+  const text = `第一章 雪\nABCXABCX\n`
+  const chapters = [{ startChar: 6, endChar: 14 }]
+  const verdict = locateNoteAnchor(
+    // 偏移 5 处是 'BCX'，不是 'ABC' → 先排除"原位"，逼它走"按摘抄重新找"那条路；
+    // 而章内两处 'ABC' 后面都跟着 'X'，前后文同样分不出 → 必须放弃而不是猜。
+    { chapterIndex: 0, charOffset: 5, excerpt: 'ABC', quotePrefix: '', quoteSuffix: 'X' },
+    text,
+    chapters,
+  )
+  assert.equal(verdict.status, 'lost', '分不出唯一位置时宁可说"对不上"，也不许指一个错的')
+  assert.equal(verdict.charOffset, null)
+})
+
+test('文本锚核对：拿不出证据的一律 unverifiable（**不算通过**）', () => {
+  const cases = [
+    ['没有章号', { charOffset: 0, excerpt: 'CDE', quotePrefix: 'AB' }],
+    ['没有摘抄（只有感想）', { chapterIndex: 0, charOffset: 0, excerpt: '', quotePrefix: 'AB' }],
+    ['旧笔记没有文本锚', { chapterIndex: 0, charOffset: 2, excerpt: 'CDE' }],
+  ]
+  for (const [why, note] of cases) {
+    const verdict = locateNoteAnchor(note, ANCHOR_TEXT, ANCHOR_CHAPTERS)
+    assert.equal(verdict.status, 'unverifiable', `${why} 应当判为 unverifiable`)
+    assert.notEqual(verdict.reason, '', `${why} 要给出原因`)
+  }
+  // 章号越界（书被重新切分过，章数变少）→ lost 而不是 unverifiable：这是**确定**的对不上。
+  const gone = locateNoteAnchor(
+    { chapterIndex: 9, charOffset: 0, excerpt: 'CDE', quotePrefix: 'AB' },
+    ANCHOR_TEXT,
+    ANCHOR_CHAPTERS,
+  )
+  assert.equal(gone.status, 'lost')
+  assert.equal(gone.reason, 'CHAPTER_GONE')
+})
+
+//#endregion
 
 test('渲染：多行摘抄每行都进引用块，空行也不会把引用块断开', () => {
   const block = renderNoteBlock({ excerpt: '第一行\n\n第三行', thought: 'x' })

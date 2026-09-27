@@ -223,7 +223,7 @@ test('浏览器半边：注册页签类型、本体与标题，且全部挂在 e
   assert.equal(tabTypes.length, 1)
   assert.equal(tabTypes[0].id, TAB_ID)
   assert.equal(tabTypes[0].priority, 'extension', '不得占用 builtin/fallback 位')
-  assert.equal(tabTypes[0].title(), '陪读模式')
+  assert.equal(tabTypes[0].title(), '本地书架')
 
   assert.deepEqual(
     slotInjections.map((entry) => entry.name).sort(),
@@ -364,7 +364,7 @@ test('浏览器半边：tab 类型必须带 guide —— 右侧栏「+」选择�
   const derived = tabTypes.flatMap((d) => (d.guide ?? []).map((entry) => ({ ...entry, kind: d.kind })))
   const mine = derived.filter((entry) => entry.kind === mod.__internals.TAB_KIND)
   assert.equal(mine.length, 1, '按宿主规则推导后必须正好有一条属于本插件的入口')
-  assert.equal(mine[0].title(), '陪读模式')
+  assert.equal(mine[0].title(), '本地书架')
 })
 
 test('浏览器半边：guide 的 icon 必须容忍宿主传入的 size / className', async () => {
@@ -1283,6 +1283,48 @@ test('接线守卫：按钮的面保持透明（宿主的 button-*-fill 是"浮�
     !/--drc-raise:\s*var\(--dsw-alias-button-[a-z-]*fill/.test(source),
     '不许把按钮的面接回宿主的 button-*-fill（那是白色浮起按钮的面）',
   )
+})
+
+test('接线守卫：界面文字默认不可选中（正文等例外）、边框粗细只有两种用途', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // ① 选中高亮的浓度是读者定下的：22% 他实测"偏淡/看不出"，现按 read-aware 的 34% 对齐。
+  //    改这个数字之前先想起那次反馈（它是配色系列里唯一由读者亲自调过的浓度）。
+  assert.ok(
+    source.includes('var(--drc-select-seed) 34%, transparent'),
+    '选中高亮的浓度应当是 34%（读者实测 22% 偏淡）',
+  )
+
+  // ② chrome 的文字不可选中（像原生应用那样），而**正文必须留在例外里** ——
+  //    选不中正文，「记笔记」的摘抄那条路就整条废掉（这是本仓库的核心流程）。
+  const rootAt = source.indexOf('.drc-root {\n  display: flex')
+  assert.ok(rootAt > 0, '找不到 .drc-root 的布局规则')
+  const rootRule = source.slice(rootAt, source.indexOf('}', rootAt))
+  assert.ok(rootRule.includes('user-select: none'), '界面文字默认应当不可选中')
+  const exemptAt = source.indexOf('.drc-root input,')
+  assert.ok(exemptAt > 0, '找不到"可选中文字"的例外清单')
+  const exempt = source.slice(exemptAt, source.indexOf('user-select: text;', exemptAt))
+  for (const selector of ['.drc-article', '.drc-quote', '.drc-thought', '.drc-reply', '.drc-pre']) {
+    assert.ok(exempt.includes(selector), `${selector} 必须留在"可选中"里（它的内容是读者要拿去用的）`)
+  }
+
+  // ③ 边框只有两种用途：**盒子一律 `1px solid`**；`2px`/`3px` 只许出现在**强调竖条**
+  //    （`border-left`）上 —— 那是另一种器件（摘抄引用、提示条、确认条），不是"更重的盒子边"。
+  //    read-aware 全站只有一种 hairline；我们保留四档**深浅**，但**粗细**必须统一。
+  const offenders = []
+  for (const line of source.split('\n')) {
+    if (line.includes('border-radius')) continue
+    const declaration = /border(-[a-z]+)?:\s*([^;]+)/.exec(line)
+    if (declaration === null || !declaration[2].includes('solid')) continue
+    const width = /(\d+(?:\.\d+)?)px/.exec(declaration[2])
+    if (width === null) continue
+    const property = `border${declaration[1] ?? ''}`
+    if (width[1] !== '1' && property !== 'border-left') {
+      offenders.push(`${property}: ${width[1]}px — ${line.trim().slice(0, 60)}`)
+    }
+  }
+  assert.deepEqual(offenders, [], '盒子边框只许 1px；2px/3px 只留给 border-left 强调竖条')
 })
 
 test('样式模板：注释里不许出现反引号（它会把 CSS 的模板字符串提前结束）', () => {

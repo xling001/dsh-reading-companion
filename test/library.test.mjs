@@ -15,6 +15,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createLibrary, resolveInboxDir } from '../lib/host/library.js'
+import { parseNotes } from '../lib/host/notes.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TMP_ROOT = join(HERE, '.tmp')
@@ -659,6 +660,129 @@ test('书库：reindex 检测到按章笔记会漂时拒绝落盘，而不是偷
 
     assert.throws(() => f.library.reindex(book.bookId, { apply: true }), /REINDEX_ANCHOR_DRIFT/)
     assert.equal(f.library.chapters(book.bookId).chapters.length, 6, '拒绝落盘 = 盘上一点没动')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：文本锚由**宿主**从正文算出（摘抄前后各 32 字 + 源文件指纹，客户端不必上报）', () => {
+  const f = makeFixture()
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    const chapter = f.library.readChapter(book.bookId, 1)
+    const offset = 40
+    const excerpt = chapter.text.slice(offset, offset + 3)
+    f.library.writeNote(book.bookId, {
+      chapterIndex: 1,
+      chapterTitle: chapter.title,
+      charOffset: offset,
+      excerpt,
+      thought: '记一笔',
+    })
+
+    const [note] = parseNotes(readFileSync(f.library.paths.notes(book.bookId), 'utf8'))
+    assert.ok(note !== undefined, '笔记要能解析出来')
+    // 指纹来自 meta，长度固定 12。
+    assert.equal(note.sourceSha, book.sourceSha256.slice(0, 12))
+    assert.equal(note.quotePrefix.length, 32, '前文固定取 32 字（够消歧、又不撑长标记行）')
+    // 这一章剩下的正文不足 32 字 → 后文只取到**章末**为止：不许跨到下一章去凑，
+    // 也不许补空白（跨章拼出来的后文根本不会出现在同一段上下文里）。
+    assert.ok(
+      note.quoteSuffix.length > 0 && note.quoteSuffix.length <= 32,
+      `后文最多 32 字且不跨章，实际 ${note.quoteSuffix.length}`,
+    )
+
+    // ★ 真正要钉的性质：**前后文 + 摘抄**必须能在正文里原样找到 —— 这才是锚点的
+    //   用途（重切分/重导入之后靠它把笔记重新对回去）。只断言"长度对"是不够的。
+    const tidy = (text) => text.replace(/\s+/g, ' ').trim()
+    assert.ok(
+      tidy(chapter.text).includes(`${note.quotePrefix}${excerpt}${note.quoteSuffix}`),
+      '前后文 + 摘抄必须能在正文里找到',
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：文本锚宁缺不猜——没位置就只留指纹，章号越界也不猜偏移', () => {
+  const f = makeFixture()
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+
+    // ① 完全没给位置（读者在正文里手写/从别处粘来的摘抄）：只有指纹，没有前后文。
+    f.library.writeNote(book.bookId, { excerpt: '没有位置的摘抄', thought: 'x' })
+    // ② 章号越界（书后来被重新切分过）：同样只留指纹，绝不"就近猜一个偏移"。
+    f.library.writeNote(book.bookId, { chapterIndex: 99, charOffset: 5, excerpt: '越界的摘抄', thought: 'y' })
+
+    const notes = parseNotes(readFileSync(f.library.paths.notes(book.bookId), 'utf8'))
+    assert.equal(notes.length, 2)
+    for (const note of notes) {
+      assert.equal(note.sourceSha, book.sourceSha256.slice(0, 12), '指纹始终要有')
+      assert.equal(note.quotePrefix, '', '拿不到正文时不许写前文')
+      assert.equal(note.quoteSuffix, '', '也不许写后文')
+    }
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：reindex 能用文本锚**确认**笔记没漂 —— 确认得了就不拦（从前是一律拒绝）', () => {
+  const text = duplicatedHeadingBook()
+  const f = makeFixture({ bookText: text })
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+
+    // 笔记写在**正常目录**下（这一步会从正文算出 pre/post 锚点）。
+    const first = f.library.readChapter(book.bookId, 0)
+    const offset = 5
+    const excerpt = first.text.slice(offset, offset + 6)
+    f.library.writeNote(book.bookId, {
+      chapterIndex: 0,
+      chapterTitle: first.title,
+      charOffset: offset,
+      excerpt,
+      thought: '一条会被确认"没漂"的笔记',
+    })
+
+    // 之后目录变了（重复目录行各自成章）→ 重切分会把它们并回去，章号因此移位。
+    installLegacyIndex(f, book.bookId, text)
+
+    const preview = f.library.reindex(book.bookId, { apply: false })
+    assert.equal(preview.remap.shifted, true, '这一版的前提：章号确实移位了')
+    assert.equal(preview.notes.total, 1)
+    assert.equal(preview.notes.intact, 1, '靠文本锚确认位置没变')
+    assert.equal(
+      preview.drift.some((item) => item.includes('按章笔记')),
+      false,
+      '既然确认没漂，就不该报"会漂"',
+    )
+
+    // ⭐ **行为改进**：从前"书里有按章笔记"就一律拒绝落盘，现在能确认的就不拦。
+    const applied = f.library.reindex(book.bookId, { apply: true })
+    assert.equal(applied.applied, true)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：reindex 对"核对不了"的笔记仍然拦住落盘，并单列原因', () => {
+  const text = duplicatedHeadingBook()
+  const f = makeFixture({ bookText: text })
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    // 没有偏移 → 宿主算不出前后文 → 这条笔记**没有文本锚**，核对不了。
+    f.library.writeNote(book.bookId, { chapterIndex: 0, excerpt: '没有位置的摘抄', thought: 'x' })
+    installLegacyIndex(f, book.bookId, text)
+
+    const preview = f.library.reindex(book.bookId, { apply: false })
+    assert.equal(preview.notes.unverifiable, 1)
+
+    const line = preview.drift.find((item) => item.includes('按章笔记'))
+    assert.ok(line !== undefined, '要报出来')
+    assert.match(line, /没有文本锚/, `要说清是"核对不了"而不是"漂了"：${line}`)
+
+    // 报告是给读者决策用的，**不是自动放行**：有核对不了的笔记就仍然拒。
+    assert.throws(() => f.library.reindex(book.bookId, { apply: true }), /REINDEX_ANCHOR_DRIFT/)
   } finally {
     f.cleanup()
   }
