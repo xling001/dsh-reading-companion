@@ -1400,17 +1400,20 @@ test('接线守卫：那一块预览已经从面板摘掉（但宿主路由保�
     false,
     '面板里不该再有那一块预览',
   )
-  assert.equal(
-    source.includes('/context'),
-    false,
-    '客户端不该再调 /context（那正是被摘掉的那个入口）',
-  )
+  // ⚠️ 查的是"**不再调用**"而不是"字符串不出现"：注释里正当地提到那条路由（解释这次改动的
+  //    来龙去脉）不该让守卫变红。
+  assert.doesNotMatch(source, /callApi\([^)]*\/context/, '客户端不该再调用 /context 那条路由')
   // 能力仍在宿主侧：路由保留（测试与"需要时自己看"都用它）。
   const server = readFileSync(join(here, '..', 'lib', 'index.js'), 'utf8')
   assert.ok(
     server.includes("pattern: '/books/:bookId/context'"),
     '宿主路由必须保留 —— 摘掉的是面板入口，不是这个能力',
   )
+  // ⚠️ **那次摘除的副作用**：`/context` 的响应里还带着「该压缩了」的信号（`backgroundWeight`），
+  //    客户端不再调它之后，提醒就无声消失了 —— 压缩变成纯手动、没人提醒（真实后果：读者某本书的
+  //    背景认识涨到 47 KB）。所以信号改挂 `/background`，而**面板必须真的读它**。
+  assert.match(source, /compaction\?\.over === true/, '面板必须读宿主回的 compaction 信号')
+  assert.ok(source.includes('这份背景认识已经偏胖'), '该压缩时要给读者一句人话')
 })
 
 test('接线守卫：提示条是浮动 toast（观感对标 lumina，长文不自动消失）', () => {
@@ -1435,6 +1438,19 @@ test('接线守卫：提示条是浮动 toast（观感对标 lumina，长文不�
   assert.match(source, /\.drc-toast \{ box-shadow: none; \}/)
   // 减少动态偏好下不播进出场动画。
   assert.match(source, /prefers-reduced-motion: reduce[\s\S]{0,60}\.drc-toast \{ animation: none; \}/)
+
+  // ⚠️ **导出结果不许走提示条**（读者 2026-10-01）：它好几行，而长文提示**不自动消失**
+  //    ⇒ 读者实测把它当成"弹窗不会消失"的 bug ✗。它改在「导出到笔记库」那节**常驻**显示，
+  //    成功绿、失败红，并记住**上次导出的时间**。
+  assert.doesNotMatch(
+    source,
+    /\.then\(\(result\) => setNotice\(result\)\)/,
+    '导出结果不该再塞进 notice',
+  )
+  assert.match(source, /drc-export-ok/, '成功要用绿色那一类')
+  assert.match(source, /drc-export-fail/, '失败要用红色那一类')
+  assert.match(source, /上次导出：/, '要说清"上次导出"是什么时候')
+  assert.match(source, /--drc-ok: var\(--dsw-alias-state-success-primary/, '成功色要从宿主取，别写死')
 })
 
 test('接线守卫：界面文字默认不可选中（正文等例外）、边框粗细只有两种用途', () => {

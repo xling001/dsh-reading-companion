@@ -3,7 +3,7 @@
  *
  * ## 为什么这不是"锦上添花"
  *
- * 抽样把每章配额切成头 60% / 尾 40%，尾窗是**专门**留给收束信号的
+ * 抽样把每章配额切成头 60% / 尾 40%（2026-10-01 曾试 55/45，当天就收回来了），尾窗是**专门**留给收束信号的
  * （"于是他明白了那个人是谁"）。而中文网文的章末几乎总是粘着
  * 「作者有话说」「求月票」「（本章完）」——以默认 100 字配额算，
  * 40 字的尾窗会被整块占满，收束信号**归零**：拿到一个起景句和一个附言，
@@ -52,6 +52,25 @@ test('章末附言：求票 / 本章完 / 分隔线这些常见形态都认', ()
   for (const note of notes) {
     assert.equal(stripChapterTrailingNoise(withNote(note)).text, pad(900), `没认出来：${note}`)
   }
+})
+
+test('章末附言：来源网站宣传也认（书源差的版本常见，2026-10-01 加）', () => {
+  // 读者的原话：'由于书源质量的问题，有很多书的尾部会有来源网站的宣传文字'。
+  const notes = [
+    '本书来自www.xiaoshuo.com',
+    '本文首发于某某网',
+    '更多精彩小说请访问 www.abc.net',
+    '手机用户请访问 m.xyz.com',
+    '（顶点小说）',
+    'www.qidian.com',
+    'https://www.example.com/123',
+  ]
+  for (const note of notes) {
+    assert.equal(stripChapterTrailingNoise(withNote(note)).text, pad(900), `没认出来：${note}`)
+  }
+  // ⚠️ 反过来：**正文里**出现的这些字样（不在章末窗口）不许被误伤 —— 由"只看尾部窗口"那条保证。
+  const inline = `${pad(400)}本书来自一个偏僻的山村\n${pad(500)}`
+  assert.equal(stripChapterTrailingNoise(inline).text, inline, '正文中段的"本书来自"不该动')
 })
 
 test('章末附言：正文中段的标记不被动（窗口只覆盖尾部 15%）', () => {

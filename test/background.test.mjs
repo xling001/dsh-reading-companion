@@ -9,7 +9,7 @@
  * 这里钉住四件事：
  *
  *   1. **顺序与权重是同一件事的两种表达**：权重必须严格递减，且与
- *      `BACKGROUND_SECTIONS` 的顺序一致。两者一旦错位，"谁是重点"就没有唯一答案。
+ *      `BACKGROUND_INJECTED_SECTIONS` 的顺序一致。两者一旦错位，"谁是重点"就没有唯一答案。
  *   2. **权重真的被执行**：同一份内容、同一份预算，只改权重表就会改分配结果。
  *      这条是专门用来防"权重又变成死代码"的。
  *   3. **旧文件向后兼容**：`background.md` 是用户可能手改过的文件，加一节
@@ -21,21 +21,25 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  BACKGROUND_SECTIONS,
+  BACKGROUND_INJECTED_SECTIONS,
   BACKGROUND_SECTION_WEIGHTS,
+  mergeBackground,
   parseBackground,
+  renderBackground,
   renderBackgroundForPrompt,
   emptyBackground,
 } from '../lib/host/background.js'
+import { buildMemoryPrompt } from '../lib/host/memory.js'
+import { buildCompactPrompt } from '../lib/host/compact.js'
 
 test('分区：六个小节，顺序与权重严格同序', () => {
   assert.deepEqual(
-    [...BACKGROUND_SECTIONS],
+    [...BACKGROUND_INJECTED_SECTIONS],
     ['人物关系', '人物', '世界观', '文风', '前文脉络', '通用概念'],
   )
 
   // 每个分区都必须有权重，否则分配时会静默拿到 0（= 永远被整节丢弃）。
-  for (const name of BACKGROUND_SECTIONS) {
+  for (const name of BACKGROUND_INJECTED_SECTIONS) {
     assert.equal(
       typeof BACKGROUND_SECTION_WEIGHTS[name],
       'number',
@@ -44,18 +48,18 @@ test('分区：六个小节，顺序与权重严格同序', () => {
   }
   assert.equal(
     Object.keys(BACKGROUND_SECTION_WEIGHTS).length,
-    BACKGROUND_SECTIONS.length,
-    '权重表里有 BACKGROUND_SECTIONS 之外的多余条目',
+    BACKGROUND_INJECTED_SECTIONS.length,
+    '权重表里有 BACKGROUND_INJECTED_SECTIONS 之外的多余条目',
   )
 
   // 严格递减，且与顺序一致。顺序是"超预算时从后往前丢"的依据，权重是
   // "先按权重保底"的依据 —— 两者必须给出同一个优先级，否则没有唯一答案。
-  for (let i = 1; i < BACKGROUND_SECTIONS.length; i += 1) {
-    const prev = BACKGROUND_SECTION_WEIGHTS[BACKGROUND_SECTIONS[i - 1]]
-    const next = BACKGROUND_SECTION_WEIGHTS[BACKGROUND_SECTIONS[i]]
+  for (let i = 1; i < BACKGROUND_INJECTED_SECTIONS.length; i += 1) {
+    const prev = BACKGROUND_SECTION_WEIGHTS[BACKGROUND_INJECTED_SECTIONS[i - 1]]
+    const next = BACKGROUND_SECTION_WEIGHTS[BACKGROUND_INJECTED_SECTIONS[i]]
     assert.ok(
       prev > next,
-      `「${BACKGROUND_SECTIONS[i - 1]}」(${prev}) 必须比「${BACKGROUND_SECTIONS[i]}」(${next}) 重`,
+      `「${BACKGROUND_INJECTED_SECTIONS[i - 1]}」(${prev}) 必须比「${BACKGROUND_INJECTED_SECTIONS[i]}」(${next}) 重`,
     )
   }
 
@@ -71,8 +75,8 @@ test('分区：六个小节，顺序与权重严格同序', () => {
   const factor = BACKGROUND_SECTION_WEIGHTS['人物关系'] / original[0]
   original.forEach((part, index) => {
     assert.ok(
-      Math.abs(BACKGROUND_SECTION_WEIGHTS[BACKGROUND_SECTIONS[index]] - part * factor) < 1e-12,
-      `「${BACKGROUND_SECTIONS[index]}」的相对份额变了：原比例 ${original.join(':')} 不再成立`,
+      Math.abs(BACKGROUND_SECTION_WEIGHTS[BACKGROUND_INJECTED_SECTIONS[index]] - part * factor) < 1e-12,
+      `「${BACKGROUND_INJECTED_SECTIONS[index]}」的相对份额变了：原比例 ${original.join(':')} 不再成立`,
     )
   })
   // 兜底那节的份额必须**小于**原表里最小的那一节（它是最后一名）。
@@ -160,7 +164,7 @@ test('分区：默认权重下，额度严格随权重递减且每节都露头',
   // 理由，而**保底与权重无关**——它是统一的一份，不能被权重挤掉。
   assert.deepEqual(omitted, [], '预算够时不该有分区被整节丢弃')
 
-  const values = BACKGROUND_SECTIONS.map((name) => {
+  const values = BACKGROUND_INJECTED_SECTIONS.map((name) => {
     assert.ok(allowances[name] > 0, `「${name}」没有拿到任何额度`)
     return { name, value: allowances[name] }
   })
@@ -206,7 +210,7 @@ test('分区：旧文件（没有「文风」节）能正常解析，新节为�
 
 test('分区：空骨架里六个节的标题都在（用户打开文件就能看见该往哪写）', () => {
   const skeleton = emptyBackground('某书')
-  for (const name of BACKGROUND_SECTIONS) {
+  for (const name of BACKGROUND_INJECTED_SECTIONS) {
     assert.match(skeleton, new RegExp(`^## ${name}$`, 'm'), `空骨架缺少「${name}」节`)
   }
 })
@@ -337,4 +341,49 @@ test('倒退提示：covered.last 超过当前进度时明说"超出的已过滤
     { budgetChars: 6000, progressIndex: 50 },
   )
   assert.doesNotMatch(atEdge.text, /已被过滤/, 'covered.last === 正在读的章号，不该报倒退')
+})
+
+test('读者族：这一节对模型不可见，但重写与合并都不许丢（2026-10-01）', () => {
+  const doc = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..20 -->',
+    '# 《魔女霓裳》· 背景认识',
+    '## 人物',
+    '### 甲',
+    '- `第3章` 身份未明',
+    '## 时间与分线',
+    '### 甲线 · 第1–7年',
+    '- `第12章` 【第3年春】与乙在渡口分离。',
+    // ⚠️ 「伏笔」不再单独成节（读者 2026-10-01）：写在条目里标出来即可。
+    '- `第15章` 【伏笔】他多看了一眼那封信（还没解释）',
+  ].join('\n'))
+
+  // ① 注入必须**看不到**这一节 —— 判据："这句话会不会让模型顺着说？"（会，就不注入）
+  const injected = renderBackgroundForPrompt(doc, { progressIndex: 20 })
+  assert.doesNotMatch(injected.text, /时间与分线/, '分线节不许进提示词')
+  assert.doesNotMatch(injected.text, /那封信/, '伏笔的正文更不许进（它会诱导提示）')
+  assert.match(injected.text, /身份未明/, '注入族照旧要在')
+
+  // ② 写成文件时**必须在** —— 否则重写一次这一节就永久没了
+  const rewritten = renderBackground(doc, '魔女霓裳')
+  assert.match(rewritten, /## 时间与分线/)
+  assert.match(rewritten, /那封信/)
+
+  // ③ 合并（增量补齐走的就是这条路）也必须保留
+  const merged = mergeBackground(doc, parseBackground(''), { from: 21, to: 30 })
+  assert.match(renderBackground(merged, '魔女霓裳'), /## 时间与分线/)
+
+  // ④ 两个提示词都得知道这一节：补齐要**写出**它，压缩要**保留**它
+  const fill = buildMemoryPrompt({
+    bookTitle: '测试书', samples: [{ index: 0, title: '一', text: '正文' }], fromChapter: 1, toChapter: 1,
+  })
+  assert.ok(fill.includes('## 时间与分线'), '补齐要写出这一节')
+  assert.ok(fill.includes('### 主线'), '要先有主线骨架')
+  assert.ok(fill.includes('【支线】'), '支线 / 副本要作为一个个单元')
+  assert.ok(fill.includes('⭐ 影响'), '每个单元必须收在"影响"上（否则就是流水账）')
+  assert.ok(fill.includes('打包说完'), '同一件事跨几十章也是一个单元，不要按章摊平')
+  assert.ok(fill.includes('【未闭合】'), '影响暂时看不出来时的标记必须明说')
+  assert.ok(fill.includes('【伏笔】'), '伏笔用标记写在条目里（不再单独成节）')
+  assert.ok(fill.includes('不写"它后面会怎样"'), '伏笔只许写观察')
+  const compact = buildCompactPrompt({ bookTitle: '测试书', background: '（材料）' })
+  assert.ok(compact.includes('## 时间与分线'), '压缩要保留这一节')
 })

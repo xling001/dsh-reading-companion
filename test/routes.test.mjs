@@ -900,3 +900,51 @@ test('HTTP：导出把笔记与背景写成"书名-…"，重复导出幂等，�
     rmSync(out, { recursive: true, force: true })
   }
 })
+
+test('背景路由要回「该压缩了」的信号（它从前跟着 /context 走，那条入口摘掉后就丢了）', async () => {
+  const dir = makeDir('routes-compaction')
+  const inbox = join(dir, 'inbox')
+  mkdirSync(inbox, { recursive: true })
+  writeFileSync(join(inbox, '夜行.txt'), Buffer.from(BOOK, 'utf8'))
+  const s = await startServer(dir)
+  try {
+    const scan = await call(`${s.base}/library/scan`, { method: 'POST' })
+    const imported = await call(`${s.base}/library/import`, {
+      method: 'POST',
+      body: { absPath: scan.body.entries[0].absPath },
+    })
+    const bookId = imported.body.book.bookId
+    const res = await call(`${s.base}/books/${bookId}/background`)
+    assert.equal(res.status, 200)
+    // ⚠️ 这个字段的**位置**比它的值重要：它从前只在 `/context` 的响应里，而面板在 2.2.2
+    //    之后不再调 `/context` ⇒ 提醒无声消失、压缩变成纯手动（读者的背景认识因此涨到 47 KB ✗）。
+    assert.equal(typeof res.body.compaction, 'object')
+    assert.equal(typeof res.body.compaction.over, 'boolean', '面板靠它决定要不要提醒')
+    assert.equal(typeof res.body.compaction.fullChars, 'number')
+    assert.equal(typeof res.body.compaction.threshold, 'number')
+    assert.ok(res.body.compaction.threshold > 0, '阈值必须是个正数（0 会让它永远喊"该压缩了"）')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('补齐超时的默认值不能退回 2 分钟（一批要吃 24000 字、还要产出八个小节）', async () => {
+  // ⚠️ 读者实测：清空重建时**子代理"停止了"** —— 那是 `memoryTimeoutMs` 到点后我们 abort 掉它。
+  //    一批最多吃 `sample.budgetChars`（默认 24000）的字，而自从加了「伏笔与未解」「时间与分线」
+  //    之后**要产出八个小节** ⇒ 2 分钟对慢模型太紧 ✗。这条守卫防止有人把它悄悄调回去。
+  const dir = makeDir('routes-timeout')
+  const s = await startServer(dir)
+  try {
+    const health = await call(`${s.base}/health`)
+    assert.equal(health.status, 200)
+    assert.ok(
+      health.body.config.memoryTimeoutMs >= 300000,
+      `补齐超时默认值应当 ≥ 300000（现在 ${health.body.config.memoryTimeoutMs}）—— ` +
+      '调短会让慢模型的那一批被 abort，读者看到的是"子代理停止了"',
+    )
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

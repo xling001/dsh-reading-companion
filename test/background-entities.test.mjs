@@ -30,7 +30,7 @@ import assert from 'node:assert/strict'
 import {
   BACKGROUND_GROUPED_SECTIONS,
   BACKGROUND_RETIRED_SECTION,
-  BACKGROUND_SECTIONS,
+  BACKGROUND_INJECTED_SECTIONS,
   emptyBackground,
   parseBackground,
   renderBackground,
@@ -469,7 +469,7 @@ test('兼容：没有任何新语法的旧文件，解析结果与从前一致',
   assert.deepEqual(doc.retired, [])
   // 六个分区一个都不能少，且顺序不变（顺序即超预算时的丢弃优先级）。
   assert.deepEqual(
-    [...BACKGROUND_SECTIONS],
+    [...BACKGROUND_INJECTED_SECTIONS],
     ['人物关系', '人物', '世界观', '文风', '前文脉络', '通用概念'],
   )
   // 加了「通用概念」之后，旧文件的解析结果必须**逐字段不变**：新分区是空数组
@@ -477,8 +477,8 @@ test('兼容：没有任何新语法的旧文件，解析结果与从前一致',
   assert.deepEqual(doc.sections['通用概念'], [], '旧文件里新分区应当是空数组')
   assert.deepEqual(doc.groups['通用概念'], {})
   assert.equal(doc.unknown.trim(), '')
-  // 归档区**不是**一个普通分区：它进了 BACKGROUND_SECTIONS 就会被渲染进提示词。
-  assert.equal(BACKGROUND_SECTIONS.includes(BACKGROUND_RETIRED_SECTION), false)
+  // 归档区**不是**一个普通分区：它进了 BACKGROUND_INJECTED_SECTIONS 就会被渲染进提示词。
+  assert.equal(BACKGROUND_INJECTED_SECTIONS.includes(BACKGROUND_RETIRED_SECTION), false)
 })
 
 //#endregion

@@ -101,7 +101,8 @@ test('补齐提示词：两步式（v1.66），且**不**强制龙套进人物�
     toChapter: 1,
     allowWeb: true,
   })
-  assert.match(withWeb, /12\. 某个时代背景/, '联网那条要改成 12（11 被两步式占了）')
+  // 11 = 两步式，12/13 = 质量层（筛选标准 / 人物弧线），14 = 读者族两节，联网那条顺延到 15。
+  assert.match(withWeb, /15\. 某个时代背景/, '联网那条现在排 15（11 两步式、12/13 质量层、14 读者族）')
 })
 
 const SAMPLES = [
@@ -388,6 +389,39 @@ test('成功：persona 是"读者自己"，不是陪读助手', () => {
   // 而整理笔记要的是"如实记录我从已读部分看出了什么"。
   assert.match(MEMORY_PERSONA, /你是这位读者自己/)
   assert.match(MEMORY_PERSONA, /绝不推测后续/)
+})
+
+test('补齐提示词：人物写弧线、只记以后会用到的、行首章号说真话（2026-10-01）', () => {
+  // 读者（主要读小说）提的质量要求。⚠️ 试过又**撤掉**的一条：让「文风」记细致的"笔法" ——
+  //    读者实测"产出太复杂"，明确要求**回到精炼的提炼方式** ⇒ 那条断言已删，别再捡回来。
+  const prompt = buildMemoryPrompt({
+    bookTitle: '测试书',
+    samples: [{ index: 0, title: '一', text: '正文' }],
+    fromChapter: 1,
+    toChapter: 1,
+  })
+
+  // ① 「文风」保持精炼：只写特征（⚠️ 试过"细记笔法"又被读者撤掉了 —— 别再加回来）
+  assert.match(prompt, /文风只写特征，不评价好坏/)
+  assert.ok(!prompt.includes('也要记**笔法**'), '细致的笔法分析已经撤掉（读者："产出太复杂"）')
+  // ② 「人物」写**变化**（弧线），不只写状态
+  assert.ok(prompt.includes('「人物」写变化，不只写状态'))
+  assert.ok(prompt.includes('弧线比标签有用'))
+  // ③ 筛选标准：这是**工具书**，不是样本的复述
+  assert.ok(prompt.includes('只记以后还会用到的'))
+  assert.ok(prompt.includes('给"以后的我"用的工具书'))
+  // ④ ⚠️ **立卡门槛**（读者反馈"人物卡太多了"，当天又要求再收紧一档）：
+  //    判据不是"出现过几次"（出现两次也可能只是被提到），而是**他有没有自己的内容**。
+  assert.ok(prompt.includes('他有没有"自己的线"'), '先问"他有没有自己的线"')
+  assert.ok(prompt.includes('至少一条只关于他自己'), '再问"他有没有只关于自己的条目"')
+  assert.ok(prompt.includes('不要为他另开一张卡'), '信息已在别人名下就别重复立卡')
+  assert.ok(prompt.includes('别只看"出现过几次"'), '次数不是判据（被提到 vs 有自己的戏）')
+  assert.ok(prompt.includes('"现在不立卡"不等于"永远不立"'), '要保留"达标后再立卡"的设计')
+  // ⑤ ⚠️ **两步法的顺序必须留着**（读者明确要求："不要直接输出人物关系，而是先总结其他内容"）
+  assert.ok(prompt.includes('第①步里不要写「人物关系」'), '第①步不许抢跑写人物关系')
+  assert.ok(prompt.includes('② 再回过头读「人物」这一节'), '第②步才是人物关系长出来的地方')
+  // ⑥ 行首章号必须是**真正依据**的那一章（实测某本书把它填成别的章，合并/取代都会指不准）
+  assert.ok(prompt.includes('行首那个章号必须是你这条真正依据的那一章'))
 })
 
 //#endregion

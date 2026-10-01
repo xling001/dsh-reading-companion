@@ -48,6 +48,16 @@ test('人物卡：只取「人物」一节 —— 世界观 / 通用概念 / 人
   assert.ok(!names.some((name) => name.includes('×')), '人物关系的主体是成对的，另算')
 })
 
+test('人物卡排序：**有关系的人排最前**（"主要人物"），不是按话多话少', () => {
+  const cards = entityCardsFor(parseBackground(MD), null)
+  const names = cards.map((card) => card.name)
+  // 甲、乙 挂在「人物关系」的 `### 甲 × 乙` 上 ⇒ 他们"有自己的线"；丙 一条关系都没有。
+  assert.deepEqual(names, ['乙', '甲', '丙'], '有关系的排前面；同有关系时按"最近说到"')
+  // ⚠️ 判据要能被读出来：面板将来想标"主要"、或读者想核对排序，都靠这个字段。
+  assert.equal(cards.find((card) => card.name === '甲').relations, 1, '甲 挂着一条关系')
+  assert.equal(cards.find((card) => card.name === '丙').relations, 0, '丙 没有关系')
+})
+
 test('人物卡：按"读者读到第几章"过滤；没写章号的条目一律保留', () => {
   const doc = parseBackground(MD)
 

@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 
 import {
   BACKGROUND_GROUPED_SECTIONS,
-  BACKGROUND_SECTIONS,
+  BACKGROUND_INJECTED_SECTIONS,
   BACKGROUND_SECTION_WEIGHTS,
   emptyBackground,
   mergeBackground,
@@ -154,7 +154,7 @@ test('兜底：内容再多也不会被饿死，且是六节里最少的一份',
   const { allowances, omitted } = renderBackgroundForPrompt(doc, { budgetChars: 900 })
   assert.deepEqual(omitted, [], '每节都要露头，兜底也不例外')
 
-  const values = BACKGROUND_SECTIONS.map((name) => ({ name, value: allowances[name] }))
+  const values = BACKGROUND_INJECTED_SECTIONS.map((name) => ({ name, value: allowances[name] }))
   for (const { name, value } of values) {
     assert.ok(value > 0, `「${name}」没有拿到额度`)
   }
@@ -190,7 +190,7 @@ test('兜底：能存能渲染，且往返等价', () => {
 
 test('兜底：是**分组**分区（能按主体寻址），与世界观同形', () => {
   assert.ok(BACKGROUND_GROUPED_SECTIONS.includes(FALLBACK))
-  assert.equal(BACKGROUND_SECTIONS[BACKGROUND_SECTIONS.length - 1], FALLBACK, '兜底必须排在最后')
+  assert.equal(BACKGROUND_INJECTED_SECTIONS[BACKGROUND_INJECTED_SECTIONS.length - 1], FALLBACK, '兜底必须排在最后')
 })
 
 test('兜底：取代在它下面同样生效（旧概念搬进归档，不再进提示词）', () => {
@@ -258,14 +258,23 @@ test('接线：压缩提示词的**顺序清单**里六节一个不少、且顺�
   const listLine = prompt.split('\n').find((line) => line.includes('个小节'))
   assert.ok(listLine !== undefined, '压缩提示词必须有一条"顺序不变"的小节清单')
 
-  for (const name of BACKGROUND_SECTIONS) {
+  for (const name of BACKGROUND_INJECTED_SECTIONS) {
     assert.ok(listLine.includes(`\`## ${name}\``), `顺序清单里缺「${name}」`)
   }
-  const positions = BACKGROUND_SECTIONS.map((name) => listLine.indexOf(`\`## ${name}\``))
+  // ⚠️ 读者族的这一节也必须在这份清单里：压缩是**整份重写文件**，
+  //    提示词漏了它，文件里这一节就永久没了 ✗。（「伏笔」不单独成节 —— 2026-10-01 读者要求。）
+  for (const name of ['时间与分线']) {
+    assert.ok(listLine.includes(`\`## ${name}\``), `压缩清单里缺读者族的「${name}」`)
+  }
+  // ⚠️ 扁平节（文风 / 前文脉络）也要能合并 —— 它们没有 `###` 主体，
+  //    只靠"同主体内部合并"够不到，于是同义条目会一直堆（实测某本书文风 26 行）。
+  assert.ok(prompt.includes('扁平节'), '压缩提示词必须说明扁平节怎么合并')
+  assert.ok(prompt.includes('语义重复的条目'), '要允许"语义重复就合并"')
+  const positions = BACKGROUND_INJECTED_SECTIONS.map((name) => listLine.indexOf(`\`## ${name}\``))
   for (let i = 1; i < positions.length; i += 1) {
     assert.ok(
       positions[i - 1] < positions[i],
-      `清单顺序必须与 BACKGROUND_SECTIONS 一致：「${BACKGROUND_SECTIONS[i]}」的位置不对`,
+      `清单顺序必须与 BACKGROUND_INJECTED_SECTIONS 一致：「${BACKGROUND_INJECTED_SECTIONS[i]}」的位置不对`,
     )
   }
   assert.match(prompt, /每一个 `###` 主体都要在/, '校验器会拒绝丢主体的压缩，提示词得跟它说同一件事')
