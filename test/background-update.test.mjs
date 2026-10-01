@@ -131,6 +131,14 @@ test('建议：平铺分区（文风 / 前文脉络）不需要主体', () => {
   assert.equal(rejected.length, 0)
   assert.equal(accepted[0].grouped, false)
   assert.equal(accepted[0].subject, '')
+  // ⚠️ **旧节名必须被接受并归一化**（2026-10-01 这一节改名成「文风（只写一次）」）：
+  //    模型和读者都可能按旧名/口语名写这条更新，而"悄悄扔掉一条修正"
+  //    是这个功能最不该有的失败方式。归一化在 `validateUpdate` 里做。
+  assert.equal(
+    accepted[0].section,
+    '文风（只写一次）',
+    '旧节名「文风」要被接受，并归一到规范名',
+  )
 })
 
 test('安全：说明里的示例必须能被它自己的解析器接受（否则等于教模型写废块）', () => {
@@ -154,8 +162,10 @@ test('建议：进文件的条目与补齐路径同形（带章号标记，才�
   const doc = updatesToIncomingDoc([update({ chapter: 30, fact: '他其实没死' })])
   assert.deepEqual(doc.groups['人物']['沈某'], ['`第30章` 他其实没死'])
   // 平铺分区进 sections，不建组。
-  const flat = updatesToIncomingDoc([update({ section: '文风', grouped: false, subject: '', fact: '短句为主' })])
-  assert.deepEqual(flat.sections['文风'], ['`第3章` 短句为主'])
+  // ⚠️ 用**规范节名**：`updatesToIncomingDoc` 收到的是**已经过校验**的更新，那时节名
+  //    已经归一化过了（"节: 文风" 这种旧名/口语名在 `validateUpdate` 里就换成了新名）。
+  const flat = updatesToIncomingDoc([update({ section: '文风（只写一次）', grouped: false, subject: '', fact: '短句为主' })])
+  assert.deepEqual(flat.sections['文风（只写一次）'], ['`第3章` 短句为主'])
   assert.deepEqual(maxUpdateChapter([update({ chapter: 7 }), update({ chapter: 30 })]), 30)
 })
 

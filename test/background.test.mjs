@@ -29,6 +29,8 @@ import {
   renderBackgroundForPrompt,
   emptyBackground,
   countBeyondProgress,
+  renderExistingForFill,
+  FILL_INCREMENTAL_SECTIONS,
 } from '../lib/host/background.js'
 import { buildMemoryPrompt } from '../lib/host/memory.js'
 import { buildCompactPrompt } from '../lib/host/compact.js'
@@ -36,7 +38,7 @@ import { buildCompactPrompt } from '../lib/host/compact.js'
 test('分区：六个小节，顺序与权重严格同序', () => {
   assert.deepEqual(
     [...BACKGROUND_INJECTED_SECTIONS],
-    ['人物关系', '人物', '世界观', '文风', '前文脉络', '通用概念'],
+    ['人物关系', '人物', '世界观', '前文脉络', '文风（只写一次）', '通用概念'],
   )
 
   // 每个分区都必须有权重，否则分配时会静默拿到 0（= 永远被整节丢弃）。
@@ -144,7 +146,7 @@ test('分区：权重真的被执行（不是死代码）', () => {
   // 把权重整个倒过来：「前文脉络」变成最重的那一节。
   const flipped = renderBackgroundForPrompt(doc, {
     ...base,
-    weights: { 人物关系: 0.12, 人物: 0.12, 世界观: 0.12, 文风: 0.12, 前文脉络: 0.52 },
+    weights: { 人物关系: 0.12, 人物: 0.12, 世界观: 0.12, '文风（只写一次）': 0.12, 前文脉络: 0.52 },
   }).allowances
 
   assert.ok(
@@ -204,7 +206,7 @@ test('分区：旧文件（没有「文风」节）能正常解析，新节为�
   assert.deepEqual(doc.covered, { first: 1, last: 9 })
   assert.deepEqual(doc.sections['人物关系'], ['甲 ↔ 乙：对手（`第3章`）'])
   assert.deepEqual(doc.sections['世界观'], ['`第1章` 有个门派'])
-  assert.deepEqual(doc.sections['文风'], [], '旧文件没有这一节时应当是空数组，不是 undefined')
+  assert.deepEqual(doc.sections['文风（只写一次）'], [], '旧文件没有这一节时应当是空数组，不是 undefined')
   assert.deepEqual(doc.characters['甲'], ['`第1章` 剑客'])
   assert.equal(doc.unknown.trim(), '', '已有的四节内容不该掉进 unknown')
 })
@@ -216,16 +218,20 @@ test('分区：空骨架里六个节的标题都在（用户打开文件就能�
   }
 })
 
-test('分区：「文风」能存能渲染（描述叙述特征，不含剧情）', () => {
+test('分区：「文风（只写一次）」能存能渲染（描述叙述特征，不含剧情）', () => {
+  // ⚠️ 夹具刻意用**旧节名** `## 文风`：2026-10-01 这一节改名成「文风（只写一次）」，
+  //    而读者磁盘上的 `background.md` 里全是旧名 —— 别名表必须继续认它，
+  //    否则整节会掉进"认不出的 `## 标题`"（那里的条目会被当成人手写内容，不再作为认识渲染）。
   const doc = parseBackground([
     '## 文风',
     '- `第1章` 第三人称限知，短句为主，对话密集',
     '- `第1章` 善用天气与器物作比喻，几乎不用感叹号',
   ].join('\n'))
 
-  assert.equal(doc.sections['文风'].length, 2)
+  assert.equal(doc.sections['文风（只写一次）'].length, 2, '旧节名必须归一到新节名')
+  assert.deepEqual(doc.sections['文风'], undefined, '不该再有一个叫「文风」的分区')
   const out = renderBackgroundForPrompt(doc, { budgetChars: 6000 })
-  assert.match(out.text, /### 文风/)
+  assert.match(out.text, /### 文风（只写一次）/)
   assert.match(out.text, /第三人称限知/)
 })
 
@@ -404,7 +410,7 @@ test('读者族：这一节对模型不可见，但重写与合并都不许丢�
   assert.ok(fill.includes('打包说完'), '同一件事跨几十章也是一个单元，不要按章摊平')
   assert.ok(fill.includes('【未闭合】'), '影响暂时看不出来时的标记必须明说')
   assert.ok(fill.includes('【伏笔】'), '伏笔用标记写在条目里（不再单独成节）')
-  assert.ok(fill.includes('不写"它后面会怎样"'), '伏笔只许写观察')
+  assert.ok(fill.includes('只写"注意到了什么"'), '伏笔只许写观察')
   const compact = buildCompactPrompt({ bookTitle: '测试书', background: '（材料）' })
   assert.ok(compact.includes('## 时间与分线'), '压缩要保留这一节')
 })
@@ -435,4 +441,85 @@ test('面板信号：文件里"进度之后"的条目要数得准（面板看得
   //    它所属的单元里有带章号的条目，那段照样会被点出来。
   assert.deepEqual(countBeyondProgress(doc, 60), { entries: 0, maxChapter: null }, '追上进度后必须归零')
   assert.deepEqual(countBeyondProgress(doc, null), { entries: 0, maxChapter: null }, '不判定时回零')
+})
+
+test('后续批次注入：只给四节 + 通用概念（非空才给）+ 时间与分线只给单元名', () => {
+  // ⚠️ 2026-10-01 读者看完实际提示词后定的（"除开第一次，后续只需要注入人物、人物关系、
+  //    前文脉络、世界观这四项"）。逐节理由见 `renderExistingForFill` 的说明。
+  const doc = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..20 -->',
+    '## 人物关系',
+    '### 甲 × 乙',
+    '- `第3章` 雨夜决裂',
+    '## 人物',
+    '### 甲',
+    '- `第2章` 身份未明',
+    '## 世界观',
+    '- `第1章` 三面环水',
+    '## 文风',
+    '- `第1章` 爱用短句',
+    '## 前文脉络',
+    '- `第1-5章` 初遇',
+    '## 时间与分线',
+    '### 主线',
+    '- `第1-4年` 骨架：还在渡口。',
+    '### 【支线】无面谷 · 第15-20章',
+    '- `第15章` 起：接任务入谷。',
+    '- `第20章` 收：出谷。',
+    '## 已取代',
+    '- `第3章` 旧的错说法',
+  ].join('\n'))
+
+  const text = renderExistingForFill(doc)
+
+  for (const name of ['人物关系', '人物', '世界观', '前文脉络']) {
+    assert.match(text, new RegExp(`^## ${name}$`, 'm'), `${name} 必须给（新条目要接在已有主体名下）`)
+  }
+  assert.match(text, /^### 甲 × 乙$/m, '分组节的布局要与注入侧同源（### 主体 + 名下条目）')
+  assert.match(text, /雨夜决裂/)
+
+  assert.doesNotMatch(text, /^## 文风（只写一次）$/m, '文风不给：它是稳定特征，后续批次不需要重读')
+  assert.doesNotMatch(text, /爱用短句/, '文风的条目更不该给')
+  assert.doesNotMatch(text, /^## 已取代$/m, '归档不给：抑制名单已经兜着，塞进来只会给"复活旧说法"的机会')
+  assert.doesNotMatch(text, /旧的错说法/)
+
+  assert.match(text, /^### 主线$/m, '时间与分线的**单元名**必须给 —— 否则每批都新建单元，同一个副本被拆成好几个')
+  assert.match(text, /^### 【支线】无面谷 · 第15-20章$/m)
+  assert.doesNotMatch(text, /接任务入谷/, '单元里的条目**不给**（那是读者的整理，不是模型的记忆）')
+
+  // 通用概念：小说里通常是空的（空节不该占字符）；非小说书它才是主体。
+  assert.doesNotMatch(text, /^## 通用概念$/m, '空的通用概念不该出现')
+  const withConcept = parseBackground([
+    '## 通用概念',
+    '### 科举制',
+    '- `第4章` 三年一考',
+  ].join('\n'))
+  assert.match(renderExistingForFill(withConcept), /^## 通用概念$/m, '非空时必须给（非小说书的主体）')
+  assert.match(renderExistingForFill(withConcept), /科举制/)
+})
+
+test('元判断：「文本类型」排在最前、永远整条注入，而且不占别人的额度', () => {
+  // ⚠️ 2026-10-02 读者提的：第一批判断"这是什么类型的书"，写进文件开头的「文本类型」，
+  //    之后每一批都带着它当写法依据。它比别的节**更不能被裁** —— 而它又很短，
+  //    所以它不进权重表、不参与保底（否则会先拿保底再被裁，恰好把最关键那句砍掉）。
+  const doc = parseBackground([
+    '## 文本类型',
+    '- 武侠小说，主线是感情线；方向：人物卡少建，时间与分线按关系阶段分单元。',
+    '## 人物',
+    '### 甲',
+    `- \`第1章\` ${'很长的条目。'.repeat(60)}`,
+  ].join('\n'))
+
+  const out = renderBackgroundForPrompt(doc, { budgetChars: 150 })
+  assert.match(out.text, /武侠小说，主线是感情线/, '元判断必须整条在场')
+  assert.match(out.text, /按关系阶段分单元/, '连后半句也不许被裁')
+  assert.ok(
+    out.text.indexOf('文本类型') < out.text.indexOf('人物'),
+    '它要排在别的节前面（它是后面几节怎么读的依据）',
+  )
+  assert.equal('文本类型' in out.allowances, false, '元判断不进额度表 —— 它不参与权重与保底')
+
+  const filled = renderExistingForFill(doc)
+  assert.match(filled, /^## 文本类型$/m, '补齐的"已有认识"里也要带上它')
+  assert.ok(filled.startsWith('## 文本类型'), '在"已有认识"里它排第一（后面的节按它来写）')
 })

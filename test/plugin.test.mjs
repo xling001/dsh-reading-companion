@@ -142,9 +142,52 @@ test('宿主半边：导出符合 cordis 契约，且插件名与 patch 行 id �
   assert.match(patch, new RegExp(`name:\\s*'${PLUGIN_NAME}'`))
 })
 
+test('配置：cordis.patch.yml 里显式写的值必须与代码默认值一致（否则"改了默认值"是个空动作）', async () => {
+  // ⚠️ 这条是 2026-10-01 抓到的**真事故**：`memoryTimeoutMs` 从 2 分钟提到 5 分钟时
+  //    **只改了代码里的默认值**，而 patch 里那份显式写着 120000 —— YAML 优先，
+  //    所以读者那边一直是 2 分钟（"子代理又停了"）。同一套默认值写在两处、只改一处，
+  //    等于改了没用。这里把"两处一致"变成一条**会被执行**的断言。
+  const host = await import(freshUrl('lib/index.js'))
+  const patch = readFileSync(join(ROOT, 'cordis.patch.yml'), 'utf8')
+
+  // 把代码默认值摊平成"键 → 值"。这套 YAML 的键在整份文件里**唯一**，所以不必真解析 YAML。
+  const flat = {}
+  const walk = (node) => {
+    for (const [key, value] of Object.entries(node ?? {})) {
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) walk(value)
+      else flat[key] = value
+    }
+  }
+  walk(host.CONFIG_DEFAULTS)
+
+  const seen = []
+  for (const line of patch.split('\n')) {
+    const matched = /^\s+([a-zA-Z][a-zA-Z0-9]*):\s*(.+?)\s*$/.exec(line)
+    if (matched === null) continue
+    const key = matched[1]
+    if (!Object.hasOwn(flat, key)) continue
+    seen.push(key)
+    const raw = matched[2].replace(/\s+#.*$/, '') // 行内注释不算值
+    const expected = flat[key]
+    const actual = typeof expected === 'boolean'
+      ? raw === 'true'
+      : Array.isArray(expected)
+        ? JSON.parse(raw)
+        : typeof expected === 'number'
+          ? Number(raw)
+          : raw.replace(/^'|'$/g, '')
+    assert.deepEqual(
+      actual,
+      expected,
+      `cordis.patch.yml 里的 ${key} 与代码默认值不一致 —— 只改了一处，等于没改`,
+    )
+  }
+
+  assert.ok(seen.length >= 15, `只对上了 ${seen.length} 个键 —— 提取逻辑可疑（YAML 结构变了？）`)
+})
+
 test('宿主半边：package.json 的 dsh 字段是宿主发现插件的方式', async () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-
   assert.equal(pkg.name, PLUGIN_NAME, '包名必须与插件名一致')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(pkg.dsh.client.platform, 'web')

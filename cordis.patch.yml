@@ -256,4 +256,4 @@
         # behaviour ("waiting tens of seconds is fine"), so this is generous.
         # The call is raced against an abort timer inside the plugin, so it can
         # never hang forever regardless of this value.
-        memoryTimeoutMs: 120000
+        memoryTimeoutMs: 300000   # must equal CONFIG_DEFAULTS.memoryTimeoutMs (guarded by test/plugin.test.mjs)

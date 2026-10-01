@@ -23,7 +23,7 @@ import {
   parseBackground,
   renderBackgroundForPrompt,
 } from '../lib/host/background.js'
-import { createCompactor, validateCompaction } from '../lib/host/compact.js'
+import { buildCompactPrompt, createCompactor, validateCompaction } from '../lib/host/compact.js'
 import { createSubagentRunner } from '../lib/host/subagent-run.js'
 import { createLibrary } from '../lib/host/library.js'
 import { BOOK, call, importBook, makeDir, startServer } from './helpers/server.mjs'
@@ -202,6 +202,24 @@ test('校验：丢了人物 → 整批丢弃（这是最不可接受的一种）
   assert.equal(verdict.ok, false)
   assert.match(verdict.reason, /^COMPACT_LOST_CHARACTERS/)
   assert.match(verdict.reason, /乙/, '要说出丢的是谁，用户才知道怎么补救')
+})
+
+test('压缩提示词：**每一节的尺度不同**必须明说（否则模型只能猜，而猜错的代价最贵）', () => {
+  // ⚠️ 2026-10-01 读者问"压缩时是否每个条目压缩程度和方法不同"。从前只有一个总目标
+  //    字数 + 一句通用规则 ⇒ 模型自己猜哪节能合并、哪节不能动；而猜错的方向恰恰是
+  //    最贵的两个：**改写「时间与分线」**（它不进提示词，删改都没人替你重建）、
+  //    或**把「人物」的主体合并掉**（丢人物卡）。
+  const prompt = buildCompactPrompt({ bookTitle: '测试书', background: '（材料）' })
+
+  assert.match(prompt, /每一节的压缩尺度不一样/, '必须明说"尺子不同"')
+  assert.match(prompt, /可以压得最狠/, '扁平节（文风）要明说可以压得最狠')
+  assert.match(prompt, /覆盖的范围不许缩小/, '前文脉络合并时范围不许缩')
+  assert.match(
+    prompt,
+    /## 时间与分线[\s\S]*一个字都不许改写/,
+    '时间与分线必须明说"一个字都不许改写" —— 它是唯一没人能重建的那一节',
+  )
+  assert.match(prompt, /同一主体名下的多条 = 合并；不同主体之间 = 不许动/, '给一句能记住的原则')
 })
 
 test('校验：读者族被删 → 整批丢弃（它不进提示词，前两条口径都够不到它）', () => {

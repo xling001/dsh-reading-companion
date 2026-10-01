@@ -94,9 +94,9 @@ test('实体键：非分组分区里的 `###` 不被当成主体', () => {
     '- `第1-9章` 初遇',
   ])
 
-  assert.deepEqual(Object.keys(doc.groups['文风'] ?? {}), [])
+  assert.deepEqual(Object.keys(doc.groups['文风（只写一次）'] ?? {}), [])
   assert.deepEqual(Object.keys(doc.groups['前文脉络'] ?? {}), [])
-  assert.deepEqual(doc.sections['文风'], ['`第5章` 爱用短句'])
+  assert.deepEqual(doc.sections['文风（只写一次）'], ['`第5章` 爱用短句'])
   assert.deepEqual(doc.sections['前文脉络'], ['`第1-9章` 初遇'])
 })
 
@@ -470,7 +470,7 @@ test('兼容：没有任何新语法的旧文件，解析结果与从前一致',
   // 六个分区一个都不能少，且顺序不变（顺序即超预算时的丢弃优先级）。
   assert.deepEqual(
     [...BACKGROUND_INJECTED_SECTIONS],
-    ['人物关系', '人物', '世界观', '文风', '前文脉络', '通用概念'],
+    ['人物关系', '人物', '世界观', '前文脉络', '文风（只写一次）', '通用概念'],
   )
   // 加了「通用概念」之后，旧文件的解析结果必须**逐字段不变**：新分区是空数组
   // （不是 undefined），既有内容一条都不掉进 unknown。这是"加法不是改动"。
