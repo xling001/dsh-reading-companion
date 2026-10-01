@@ -61,7 +61,7 @@ test('设置：没设过时 webGate 为 null，生效值跟随配置', async () 
     assert.equal(panel.body.webGate, 'off', '面板拿到的必须是生效值，不是配置值')
 
     // 而真正要紧的是投喂给模型的那一份。
-    assert.match(injected(s), /联网只用来查设定/, '档位是 off 时，守则应当说"可以联网查设定"')
+    assert.match(injected(s), /联网不拦，但"不查这本书"这条还在/, '档位是 off 时：联网不拦，但仍不许查这本书')
   } finally {
     await s.close()
     rmSync(dir, { recursive: true, force: true })
@@ -73,7 +73,7 @@ test('设置：界面改档位压过配置，且**不需要重启**就生效', a
   const s = await startServer(dir, { config: { webGate: 'off' } })
   try {
     const bookId = await bindBook(s.base, dir)
-    assert.match(injected(s), /联网只用来查设定/, '前置：初始档位是 off')
+    assert.match(injected(s), /联网不拦，但"不查这本书"这条还在/, '前置：初始档位是 off')
 
     const saved = await call(`${s.base}/settings`, { method: 'PUT', body: { webGate: 'block-all' } })
     assert.equal(saved.status, 200)
@@ -85,7 +85,7 @@ test('设置：界面改档位压过配置，且**不需要重启**就生效', a
     // 而"改完没生效"在界面上看起来就像开关坏了。
     const after = injected(s)
     assert.match(after, /不要联网查这本书/, '改完档位必须立即改变注入内容')
-    assert.doesNotMatch(after, /联网只用来查设定/, '旧档位的措辞必须消失')
+    assert.doesNotMatch(after, /联网不拦，但"不查这本书"这条还在/, '旧档位的措辞必须消失')
 
     assert.equal(
       (await call(`${s.base}/books/${bookId}/background`)).body.webGate,
@@ -102,7 +102,7 @@ test('设置：界面改档位压过配置，且**不需要重启**就生效', a
   }
 })
 
-test('设置：block-all 与 block-book 在提示词里措辞相同，区别只在工具闸', async () => {
+test('设置：block-book 的提示词比 block-all 宽松（有意为之，代价见注释）', async () => {
   const dir = makeDir('set-two-modes')
   const s = await startServer(dir)
   try {
@@ -112,12 +112,19 @@ test('设置：block-all 与 block-book 在提示词里措辞相同，区别只�
     await call(`${s.base}/settings`, { method: 'PUT', body: { webGate: 'block-book' } })
     const book = injected(s)
 
-    // 这两档的差别是"一律拒绝"vs"拦住看起来在查这本书的查询"，那是**工具闸**
-    // 的严格程度，不是给模型的措辞。措辞相同是刻意的：模型两种情况下都该
-    // "不要联网查这本书"。若哪天有人把两档的提示词也写成不同，这条会提醒他
-    // 想清楚那是不是有意的。
-    assert.equal(all, book, '两档在提示词里应当逐字相同')
-    assert.match(book, /不要联网查这本书/)
+    // ⚠️ 这条曾经断言两档**逐字相同**（那时的理由是"给模型的措辞不该随闸门变"）。
+    //    读者 2026-09-27 指出那写错了：block-book 的**真实权限**是
+    //    "**允许联网、只拦看起来在查这本书的查询**"，而 block-all 是"**完全不给工具**"。
+    //    用同一句"不要联网查这本书"会把宽松档写成禁令 —— 模型于是连查词义/典故都不敢，
+    //    与它实际被放开的权限不符。所以现在**必须分开写**。
+    // ⚠️ **代价（想清楚再改回去）**：守则是 prompt 稳定前缀的一部分，
+    //    两档措辞不同 = 在 block-all ↔ block-book 之间切换会让前缀失效一次（之后仍稳定）。
+    assert.notEqual(all, book, '一档没有工具、一档有工具但要自律，措辞不能相同')
+    assert.match(all, /不要联网查这本书/)
+    assert.match(book, /可以联网查资料，但不许查这本书/)
+    // 底线不随档位变：**这本书的剧情、人物、结局一律不许查**。
+    assert.match(book, /剧情、人物、结局一律不许查/)
+    assert.match(all, /不要试图搜索它的剧情、结局或人物资料/)
   } finally {
     await s.close()
     rmSync(dir, { recursive: true, force: true })

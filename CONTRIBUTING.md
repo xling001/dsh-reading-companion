@@ -186,7 +186,8 @@ npm test                    # 等价于 node --test（默认进程隔离，慢�
 | `test/*.test.mjs` | 零依赖测试（清单见上）|
 | `scripts/link-into-profile.mjs` | 幂等、可回滚的 profile 安装/卸载 |
 | `scripts/reindex-books.mjs` | 让书架里**已有**的书吃到新的切分规则（默认预演，`--apply` 落盘并备份）|
-| `docs/design-v1.md` | 设计稿：契约、数据模型、关键算法、共存矩阵、风险清单、逐条修订史 |
+| `docs/design.md` | 设计稿（现行）：**现行约定** + 逐条修订史（新在前）|
+| `docs/design-v1-archive.md` | v1 时代封存：v1.1–v1.88 的修订史与原始设计正文（契约、数据模型、算法、风险清单）|
 | `docs/manual-testing.md` | 发版前的真机回归清单（P1–P19）|
 | `docs/publishing.md` | **打包契约**：一个 DSH 插件在磁盘上必须长什么样 |
 | v2.1.0 审计报告 | 代码/兼容/纯净性审计 + **早期历史记录**（已废弃方向的结论，不再随包发布） |

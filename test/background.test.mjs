@@ -319,9 +319,11 @@ test('倒退提示：covered.last 超过当前进度时明说"超出的已过滤
   assert.match(back.text, /已被过滤/)
   assert.doesNotMatch(back.text, /尚未\*\*纳入/, '倒退时不该发"尚未纳入"那条（方向相反）')
 
-  // 正向（落后）时的措辞不变 —— 这条是回归保护。
+  // 正向（落后）时**不再由这里发缺口提示**（2026-09-27 去重）：那句话归「当前情况」那段
+  // （`renderSituation`）—— 记录在案的意图是「缺口必须明说，而且只有动态区能说」。
+  // 这条因此从"回归保护"改成了"去重守卫"：两处同一轮都进 prompt 就是重复。
   const ahead = renderBackgroundForPrompt(doc, { budgetChars: 6000, progressIndex: 1200 })
-  assert.match(ahead.text, /第 1000–1200 章\*\*尚未\*\*纳入/)
+  assert.doesNotMatch(ahead.text, /尚未\*\*纳入/, '缺口提示只在「当前情况」那段，别在这里重复')
   assert.doesNotMatch(ahead.text, /已被过滤/)
 
   // 边界：`progressIndex` 是 0 起，所以"正在读的那一章"是 `progressIndex + 1`。

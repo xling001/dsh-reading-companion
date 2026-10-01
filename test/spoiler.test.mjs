@@ -357,8 +357,13 @@ test('守则：联网说法跟着档位变，但"不主动剧透"始终在', () 
     // 稳定前缀就会跟着抖（缓存）。
     assert.match(text, /书友设定.*只调风格/s)
   }
+  // ⚠️ 三档措辞是**一家三口**（2026-09-27 统一）：核心都是「不查这本书」，
+  //    区别只在"能不能联网"这一件事上（block-all 不给工具 / block-book 只拦查本书 /
+  //    off 不拦但仍不许查本书、不许说）。改任何一档请三档一起看。
   assert.match(blocked, /不要联网查这本书/)
-  assert.match(open, /联网只用来查设定/)
+  assert.match(open, /联网不拦，但"不查这本书"这条还在/)
+  assert.match(open, /剧情、人物、结局一律不许查/)
+  assert.match(open, /来源按上一条声明/)
 })
 
 test('守则：元剧透清单（防"制造期待"，而不只是防情节）', () => {
@@ -372,7 +377,8 @@ test('守则：元剧透清单（防"制造期待"，而不只是防情节）', 
   assert.match(text, /指向未来的阅读指令/, '"以后看到 X 留意"这类话也算剧透')
   assert.match(text, /「记下这个后面会用到」/)
   assert.match(text, /别用「我先不说」制造暗示/, '"我先不说"本身就是提示')
-  assert.match(text, /「只是地理 \/ 结构」「没有具体事件」为由提前确认未读内容/)
+  // ⚠️ 这些断言**容忍换行**（`\s*`）：守则的折行只是排版，压缩措辞时不该让守卫变红。
+  assert.match(text, /「只是地理 \/ 结构」\s*「没有具体事件」为由提前确认未读内容/)
 })
 
 test('守则：引文只能来自原文、推断要写成推断（防"凭记忆引后文"）', () => {
@@ -396,9 +402,9 @@ test('守则：来源声明与"读者优先于二手来源"', () => {
   assert.match(text, /也包括你自己的记忆/, '模型自己的记忆也是二手来源')
   assert.match(text, /永远不要用二手来源去纠正读者读到或听到的内容/)
   assert.match(text, /连"书评说的不一样"这种中性的提及/, '中性提及同样算越界')
-  assert.match(text, /只有他\*\*明确问\*\*"书评里怎么说"时才可以转述/)
+  assert.match(text, /只有他\*\*明确问\*\*"书评里怎么说"\s*时才可以转述/)
   // 与既有联网规则不冲突：剧情仍然一律不许讲（我们更严，这一条不能被动摇）。
-  assert.match(text, /去搜这本书的剧情、结局、后续/)
+  assert.match(text, /剧情、人物、结局一律不许查/)
 })
 
 test('守则：与"有没有背景认识"无关——它必须逐字节稳定，否则缓存每章失效', () => {
@@ -442,13 +448,40 @@ test('缺口：措辞必须把"我还没纳入"与"不能剧透"分开（否则�
   //    第 20 章**他读过** —— 所以那不是剧透，只是模型还没把它整理进记忆。
   //    含糊的措辞会让它回一句听起来像"这个我不能说"的话，那正是要避免的。
   assert.match(text, /覆盖到第 10 章；第 11–30 章\*\*尚未\*\*纳入/)
-  assert.match(text, /这\*\*不是\*\*剧透问题/)
-  assert.match(text, /那一段读者\*\*已经读过\*\*了/)
+  assert.match(text, /不是剧透/)
+  assert.match(text, /那一段他已经读过了/)
   assert.match(text, /不要说"这个我不能说"/)
   assert.match(text, /补齐前文记忆/, '必须给读者一个可执行的下一步')
 })
 
-test('背景渲染：覆盖区间与缺口都要明说，缺口是这一层的守门人', () => {  const doc = parseBackground([
+test('注入去重：缺口的"不要下判断"整段注入里只出现一次（只有动态区说）', () => {
+  // ⚠️ 这两处曾经各写一遍，而它们**同一轮都进 prompt** —— 重复既费 token 又互相冲淡。
+  //    记录在案的意图是「缺口必须明说，而且**只有动态区能说**」⇒ 归「当前情况」那段
+  //    （`renderSituation`），背景那一段**不再重复**。
+  const doc = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '# 《魔女霓裳》· 背景认识',
+    '## 人物',
+    '- `第3章` 竹纤：猎户之女。',
+  ].join('\n'))
+  const background = renderBackgroundForPrompt(doc, { progressIndex: 30 })
+  const situation = renderSituation({
+    progress: { chapterIndex: 30 },
+    backgroundCovered: { first: 1, last: 10 },
+    totalChapters: 80,
+    hasBackground: true,
+  })
+  const count = (text) => (String(text).match(/不要对这一段的内容下判断/g) ?? []).length
+  assert.equal(count(situation), 1, '「当前情况」那段要写')
+  assert.equal(count(background.text), 0, '背景那段不该再写一遍')
+  // 但**后向**（读者跳回水位线之前）的警告只属于背景那一段 —— 它说的是"材料已被过滤"。
+  const jumpedBack = renderBackgroundForPrompt(doc, { progressIndex: 3 })
+  assert.match(jumpedBack.text, /已被过滤/)
+  assert.equal(count(jumpedBack.text), 0, '后向那句是另一件事，别混进来')
+})
+
+test('背景渲染：覆盖区间与缺口都要明说，缺口是这一层的守门人', () => {
+  const doc = parseBackground([
     '<!-- drc-background: schema=1 covered=1..3 -->',
     '# 《魔女霓裳》· 背景认识',
     '## 人物关系',
@@ -464,7 +497,13 @@ test('背景渲染：覆盖区间与缺口都要明说，缺口是这一层的�
 
   const out = renderBackgroundForPrompt(doc, { progressIndex: 6 })
   assert.match(out.text, /覆盖：第 1–3 章/)
-  assert.match(out.text, /第 4–6 章\*\*尚未\*\*纳入/, '缺口必须明说')
+  // ⚠️ 缺口提示**不在这里**（2026-09-27 去重）—— 它归 `renderSituation`，见下。
+  assert.doesNotMatch(out.text, /尚未\*\*纳入/)
+  assert.match(
+    renderSituation({ progress: { chapterIndex: 6 }, backgroundCovered: { first: 1, last: 3 }, hasBackground: true }),
+    /第 4–6 章\*\*尚未\*\*纳入/,
+    '缺口必须明说（在「当前情况」那段）',
+  )
   assert.match(out.text, /沈某某 ↔ 顾某/)
 })
 
