@@ -620,6 +620,103 @@ test('接线守卫：二级确认统一走 confirmBar（不许再出现浏览器
   assert.match(source, /\.drc-confirm \{/, 'CSS 里要有 .drc-confirm')
 })
 
+test('确认条：**真执行**一次 —— busy 必须同时禁用两个按钮，两个回调也不许串台', async () => {
+  // ⚠️ 这条是 2026-10-01 三方评审点名的两处"假覆盖"之一：上面那条**接线守卫**只做
+  //    源码子串匹配（`source.includes('function confirmBar(')`），它钉的是"这段文本
+  //    还在"，**不是**"行为发生"。函数体里任何真实缺陷（漏传 disabled、回调接错、
+  //    文案兜底写反）都照不到，而报告里那两行看起来"已覆盖"。
+  //    所以这里**不改**上面那条（它防的是"这个函数被删掉"，仍然有用），
+  //    而是补一条真执行 —— 一个钉存在，一个钉行为。
+  const { confirmBar } = await internals()
+  const calls = []
+  const tree = confirmBar({
+    text: '会清空回收站，且不可撤销',
+    primary: { label: '清空', onClick: () => calls.push('primary') },
+    secondary: { label: '取消', onClick: () => calls.push('secondary') },
+  })
+
+  assert.equal(tree.props.className, 'drc-confirm', '必须用统一那个类，不是自己拼一个')
+  assert.equal(tree.children[0].children[0], '会清空回收站，且不可撤销', '后果说明要原样渲染出来')
+
+  const [primary, secondary] = tree.children[1].children
+  assert.equal(primary.children[0], '清空')
+  assert.equal(secondary.children[0], '取消')
+  assert.equal(primary.props.disabled, false, '不在进行中时不该禁用')
+
+  primary.props.onClick()
+  assert.deepEqual(calls, ['primary'], '点主按钮只能触发它自己的回调（串台 = 点"取消"却执行了删除）')
+  secondary.props.onClick()
+  assert.deepEqual(calls, ['primary', 'secondary'])
+
+  // busy：**两个都要禁用**。少禁一个，就等于"正在进行中"时还能把不可逆动作点第二次。
+  const busyTree = confirmBar({
+    text: 'x',
+    primary: { label: 'A', onClick: () => {} },
+    secondary: { label: 'B', onClick: () => {} },
+    busy: true,
+  })
+  const [busyPrimary, busySecondary] = busyTree.children[1].children
+  assert.equal(busyPrimary.props.disabled, true, 'busy 时主按钮必须禁用')
+  assert.equal(busySecondary.props.disabled, true, 'busy 时次按钮也必须禁用')
+
+  // 兜底文案：没给 label 时的默认字（这两个字是"读者看到的最后一道防线"）。
+  const bare = confirmBar({ text: 'y' })
+  const [barePrimary, bareSecondary] = bare.children[1].children
+  assert.equal(barePrimary.children[0], '确定')
+  assert.equal(bareSecondary.children[0], '取消')
+})
+
+test('导出：**真执行**一次 —— 新建/更新/未变要数准，失败要走 error 那一支', async () => {
+  // ⚠️ 另一处被点名的"假覆盖"（见 `client.test.mjs` 里那条"导出结果"的源码守卫）：
+  //    它只匹配源码子串，钉的是"这段文本还在"。这里补一条**真执行** ——
+  //    "新建/更新/未变"的计数、追加条数、警告拼接、目录去空白、
+  //    以及失败时返回可渲染的 error（两个入口都靠它填 notice），
+  //    这些全是子串匹配照不到、而读者会直接看到的东西。
+  const { exportBookFiles } = await internals()
+  const originalFetch = globalThis.fetch
+  const posts = []
+  try {
+    globalThis.fetch = async (url, options) => {
+      posts.push({ url: String(url), body: options?.body })
+      return new Response(JSON.stringify({
+        ok: true,
+        dir: 'D:\\笔记库',
+        files: [{ action: 'create' }, { action: 'update' }, { action: 'append' }, { action: 'same' }],
+        notes: { appended: 2 },
+        warnings: ['有一个文件被占用，已跳过'],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+
+    const result = await exportBookFiles('abc123', '  D:\\笔记库  ')
+    assert.equal(result.kind, 'ok')
+    assert.match(result.text, /已导出 4 个文件到 D:\\笔记库/)
+    assert.match(result.text, /新建 1 · 更新 2 · 未变 1/, '三种 action 的分类计数不能串')
+    assert.match(result.text, /本次追加了 2 条新笔记/)
+    assert.match(result.text, /有一个文件被占用/, '警告必须如实带出来')
+
+    assert.equal(posts.length, 1, '一次导出只该发一个请求')
+    assert.match(posts[0].url, /\/books\/abc123\/export$/)
+    const sent = typeof posts[0].body === 'string' ? JSON.parse(posts[0].body) : posts[0].body
+    assert.equal(sent.dir, 'D:\\笔记库', '目录两端的空白要去掉再发')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  // 失败分支：`callApi` 对非 2xx 会抛，函数必须**接住**并回一个能渲染的 error
+  // （抛出去的话，两个入口的 notice 都会变成一句没有信息量的报错）。
+  try {
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({ ok: false, error: 'EXPORT_REJECTED', reason: 'DIR_TAKEN' }),
+      { status: 409, headers: { 'content-type': 'application/json' } },
+    )
+    const failed = await exportBookFiles('abc123', '')
+    assert.equal(failed.kind, 'error')
+    assert.ok(typeof failed.text === 'string' && failed.text !== '', '错误也要有一句人话')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('笔记页按钮：落盘是唯一主按钮，「保存草稿」是暂存出口', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
@@ -2677,6 +2774,17 @@ test('竞态守卫：每个按书加载的资源各自装了守卫', () => {
     //    已经不存在的资源装作有守卫（这一条正是它刚才报的错）。
     // 打开书：目录与进度一起拉的 Promise.all，成功与失败两条路径。
     ['openGuard', 2],
+    // ⚠️ 2026-10-01 三方评审查出：`NotesView` 那几条加载器**一个守卫都没有** ——
+    //    切书 / 翻页 / 连点两次删除时，先发的请求可能后回来，把旧数据写进已经
+    //    翻篇的界面。下面三条是**补接**的，不是新资源。
+    // 笔记列表：`reloadNotesPage` / `refreshNotes` / `loadPage` 三处写同一份状态
+    // （最后一处 then 与 catch 都要验票）。
+    ['notesGuard', 4],
+    // 草稿列表：只在成功路径写状态，所以只有一处提前返回。
+    ['draftsGuard', 1],
+    // 回收站：成功与失败两条路径都要验票 —— 失败分支会"清零"，
+    // 不验票就等于把另一本书的计数清成 0。
+    ['trashGuard', 2],
     // ⚠️ `captureGuard` 已经**删掉**了，别再加回来：起稿现在是同步的（`captureNote`
     //    不落服务端，见「起稿：进笔记页不写服务端」那条用例），没有响应会晚到。
   ]

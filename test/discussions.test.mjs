@@ -84,6 +84,34 @@ test('时间线：顺序约定是"文件里旧在前"，而对外一律新在前
   assert.equal(lastDiscussionAt(records), '2026-01-03T00:00:00.000Z')
 })
 
+test('时间线：合并过的那条即使留在原位，"最新一次"也必须按时间算（2026-10-01 三方评审 P2）', () => {
+  // 真实形状：10:00 那条先写；11:00 的回应**并进它**（`mergeDiscussion` 更新 `at`、
+  // 但位置不动）；随后又有一次 10:30 的讨论。于是文件里的顺序不再等于时间顺序 ——
+  // 旧实现按数组位置取"最新"，会报出 10:30，而真正最新是 11:00（面板上"距上次
+  // 聊这本书"因此说了假话，时间线首条也错）。
+  const records = [
+    { at: '2026-01-01T11:00:00.000Z', chapterIndex: 1, thought: '合并进去的回应' },
+    { at: '2026-01-01T10:30:00.000Z', chapterIndex: 2, thought: '后来那次单独的讨论' },
+  ]
+  assert.equal(
+    lastDiscussionAt(records),
+    '2026-01-01T11:00:00.000Z',
+    '最新一次是 11:00，不是数组里最后那条',
+  )
+  assert.equal(recentDiscussions(records, 1)[0].chapterIndex, 1, '面板时间线首条也必须是最新那次')
+})
+
+test('时间线：at 缺失或不可解析时不许把排序搅乱（NaN 参与比较会让结果不可预测）', () => {
+  const records = [
+    { at: '不是时间', chapterIndex: 1, thought: '坏时间' },
+    { chapterIndex: 2, thought: '没时间' },
+    { at: '2026-01-02T00:00:00.000Z', chapterIndex: 3, thought: '好时间' },
+  ]
+  assert.equal(recentDiscussions(records, 1)[0].chapterIndex, 3, '有合法时间的必须排在前面')
+  assert.equal(recentDiscussions(records, 3).length, 3, '坏时间不该让元素凭空消失')
+  assert.equal(lastDiscussionAt(records), '2026-01-02T00:00:00.000Z')
+})
+
 test('时间线：条数封顶，旧的直接丢（信息已沉淀进 background.md）', () => {
   const path = join(makeDir('discussions-cap'), 'discussions.jsonl')
   for (let i = 0; i < 12; i += 1) {

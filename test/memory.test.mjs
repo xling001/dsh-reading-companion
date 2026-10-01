@@ -93,7 +93,13 @@ test('补齐提示词：两步式（v1.66），且**不**强制龙套进人物�
   //    产出掉到 1,878 字，比任何一臂都薄 —— 已撤，只留 11。
   assert.ok(!prompt.includes('都必须在「人物」一节里'), '不许强制"关系里每一方都要有卡"')
   assert.ok(!prompt.includes('只给重要角色立'), '不许再加"只给重要角色立卡"（验证臂里它与产出变薄同时出现）')
-  // ③ 联网那条的编号要让位（现在是 12，不能和 11 撞号）。
+  // ③ 规则编号必须**唯一**（不能和已有规则撞号）。
+  //    历史：11 = 两步式、12/13 = 质量层、14 = 读者族、15 = 立卡门槛。
+  //    ⚠️ 2026-10-01 三方评审查出：联网那条原来也叫 **15** —— 与立卡门槛重号 ⇒
+  //    **按号引用就有歧义**（本仓库的设计稿与 `background.js` 的注释都在按号引用，
+  //    例如"立卡门槛（memory.js 第 15 条）"）。现在它排 16。
+  //    这条守卫断言的是**不重号**这条不变式，而不是某个具体数字 ——
+  //    下次再插规则时，撞号会在这里变红，而不是等到某条注释指错了地方。
   const withWeb = buildMemoryPrompt({
     bookTitle: '测试书',
     samples: [{ index: 0, title: '一', text: '正文' }],
@@ -101,8 +107,14 @@ test('补齐提示词：两步式（v1.66），且**不**强制龙套进人物�
     toChapter: 1,
     allowWeb: true,
   })
-  // 11 = 两步式，12/13 = 质量层（筛选标准 / 人物弧线），14 = 读者族两节，联网那条顺延到 15。
-  assert.match(withWeb, /15\. 某个时代背景/, '联网那条现在排 15（11 两步式、12/13 质量层、14 读者族）')
+  const numbers = [...withWeb.matchAll(/^(\d+)\. /gm)].map((match) => Number(match[1]))
+  assert.ok(numbers.length >= 10, `只提到 ${numbers.length} 条带号的规则 —— 提取逻辑可疑`)
+  assert.equal(
+    new Set(numbers).size,
+    numbers.length,
+    `规则编号不许重复（实测：${numbers.join(', ')}）`,
+  )
+  assert.match(withWeb, /16\. 某个时代背景/, '联网那条现在排 16（15 已被立卡门槛占用）')
 })
 
 const SAMPLES = [

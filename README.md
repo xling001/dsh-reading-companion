@@ -18,28 +18,10 @@
   <img src="docs/images/01-shelf-and-chat.png" alt="书架与聊天窗口：左侧会话里陪读 AI 在聊读后感想，右侧「本地书架」面板列出导入的书、分组、分类与绑定状态">
 </p>
 
-[更新说明](#更新说明) · [功能总览](#功能总览) · [怎么用](#怎么用) · [防剧透](#防剧透三层) · [安装](#安装) · [配置参考](#配置参考) · [数据目录](#数据目录) · [开发](#开发)
+[功能总览](#功能总览) · [怎么用](#怎么用) · [防剧透](#防剧透三层) · [安装](#安装) · [配置参考](#配置参考) · [数据目录](#数据目录) · [开发](#开发)
 
----
-
-## 更新说明
-
-> 这里的版本号是**推送给使用者的版本**；设计文档里另有一套**内部迭代号**，两套号刻意分开。
-> 想知道每一轮为什么这么改，去 `docs/design.md`。
-
-**2.2.5：**
-
-- 新增「**时间与分线**」：书被整理成**主线 + 一个个单元**（副本 / 一段关系 / 一段旅程），每段以「⭐ 影响」收尾。**只给你看，AI 读不到。**
-- **人物卡**：只有"有自己的线"的角色才建卡，并按重要程度排 —— **主要人物在最前**。
-- 章末的「作者有话说」与**来源网站宣传**，在抽样前就被剥掉。
-- **导出结果常驻在设置页**（成功绿 / 失败红 + 上次导出时间），不再弹窗。
-- 补齐超时 2 分钟 → 5 分钟。
-
-更早的版本都在 [`docs/design.md`](./docs/design.md) 的修订块里。
-
-## 缘起
-
-本插件最初是为了更好地阅读某本小说而设计。
+> **每个版本改了什么、为什么改** → 见 [**Releases**](https://github.com/xling001/dsh-reading-companion/releases)（只写读者能感知的结论）；每一轮的设计取舍与踩坑记在 [`docs/design.md`](./docs/design.md) 的修订块里。
+> **这份 README 只讲它现在是什么、能做什么、怎么用** —— 更新说明不再放在这里。
 
 ---
 
@@ -404,6 +386,7 @@ lib/
 scripts/
 ├── link-into-profile.mjs   # 本地开发：往 profile 里建目录联接（纯加法，--unlink 回滚）
 ├── reindex-books.mjs       # 让已导入的书吃到新的切分规则（默认预览，--apply 才写）
+├── rebuild-library-index.mjs # 索引损坏后唯一的恢复入口：扫每本书的 meta.json 重建（默认预览）
 └── clean-background-note.mjs # 清理 background.md 的注释残留（默认预览，需 --file 指定）
 docs/                       # design（现行）/ design-v1-archive（封存）/ manual-testing / publishing
 ```
@@ -421,12 +404,18 @@ docs/                       # design（现行）/ design-v1-archive（封存）/
 ## 开发
 
 ```bash
-npm test                                  # 全部测试（Node 内置 test runner，577 项）
+npm test                                  # 全部测试（Node 内置 test runner，647 项；跑前自动清 test/.tmp）
 npm run test:no-isolation                 # 受限沙箱里（无法 spawn 子进程）用这条
 node scripts/reindex-books.mjs            # 预演：让书架里已有的书吃到新切分规则
 node scripts/reindex-books.mjs --apply    # 真的落盘（先把要改的文件备份到 backups/）
+node scripts/rebuild-library-index.mjs            # 预演：扫 books/<bookId>/meta.json 重建书架索引
+node scripts/rebuild-library-index.mjs --apply    # 真的落盘（先把 library.json 整份备份）
 node scripts/clean-background-note.mjs --file <background.md 路径>   # 清理注释残留（默认预览）
 ```
+
+> `rebuild-library-index.mjs` 是 **`library.json` 损坏之后唯一的恢复入口**：损坏时书架会显示成空的
+> （书其实都还在磁盘上），这个脚本按每本书自己的 `meta.json` 把索引重建回来 —— **只补不丢**，
+> 读不出 `meta.json` 的书保留原条目。
 
 - **改完即生效**：`lib/` 就是源码，重启 DSH Desktop 即可（本插件没有构建产物，所以也没有"改 `src/` 触发重载"那一层）。
 - **改切分规则**不会自动作用于已导入的书（导入是幂等的），所以老书要么删掉重导（丢笔记、丢进度），要么用 `reindex-books.mjs` 就地重切。

@@ -14,7 +14,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -138,4 +138,51 @@ test('契约：联网档位的三档在宿主与客户端逐字一致、顺序�
   // 两侧都要真的提到东西，否则下面可能拿两个空数组"通过"。
   assert.equal(hostModes.length, 3, `宿主应当正好三档，实际 ${hostModes.length}`)
   assert.deepEqual(clientModes, hostModes, '客户端的分段控件必须与宿主的三档逐字同序')
+})
+
+/**
+ * **接线守卫：判"这一节是不是分组的"只能有一处定义。**
+ *
+ * 2026-10-01 的 P0 就是这个形状：这个判定当时散在 6 处
+ * `BACKGROUND_GROUPED_SECTIONS.includes(...)`（解析 / 归组 / 渲染 / 合并 / 取代 /
+ * 拆单元）。给读者族加「时间与分线」时，`BACKGROUND_SECTIONS` 接对了、**分组判定
+ * 漏了一族** ⇒ `### 主线` 与 `### 【支线】… · 第N-M章` 在**每一次写盘**时被静默
+ * 丢掉（连带标题里的章号区间），而 627 条行为断言全绿放行——因为它们只断到
+ * `## 时间与分线` 这一层。
+ *
+ * 所以这里钉的不是行为，是**接线形状**（design.md 的第三类守卫）：想知道某节是不是
+ * 分组的，一律走 `isGroupedSection()`。行为那一半由 `background.test.mjs` 的
+ * 读者族往返断言看着。
+ */
+test('接线：分组判定只有一处定义（host 侧不许再写裸的 BACKGROUND_GROUPED_SECTIONS.includes）', () => {
+  const hostDir = join(ROOT, 'lib', 'host')
+  const files = readdirSync(hostDir).filter((name) => name.endsWith('.js')).sort()
+  assert.ok(files.length >= 10, `只扫到 ${files.length} 个 host 文件，扫描逻辑可疑`)
+
+  const NEEDLE = 'BACKGROUND_GROUPED_SECTIONS.includes'
+  const offenders = []
+  let predicateHits = 0
+  for (const name of files) {
+    const source = readFileSync(join(hostDir, name), 'utf8')
+    source.split('\n').forEach((line, index) => {
+      if (!line.includes(NEEDLE)) return
+      const code = line.trim()
+      // 注释里提到这个写法是**解释**（本守卫自己也提到），不算接线。
+      if (code.startsWith('*') || code.startsWith('//') || code.startsWith('/*')) return
+      // 谓词自己那一行是唯一的合法处。
+      if (name === 'background.js' && code.startsWith(`return ${NEEDLE}`)) {
+        predicateHits += 1
+        return
+      }
+      offenders.push(`${name}:${index + 1}: ${code}`)
+    })
+  }
+
+  assert.equal(predicateHits, 1, 'isGroupedSection 应当正好有一处实现 —— 找不到说明提取逻辑可疑')
+  assert.deepEqual(
+    offenders,
+    [],
+    `分组判定必须只走 isGroupedSection()，这些地方又写回了裸常量（漏一族 = 读者族的 `
+      + `\`###\` 每次写盘被静默丢掉）：\n${offenders.join('\n')}`,
+  )
 })

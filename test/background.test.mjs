@@ -28,6 +28,7 @@ import {
   renderBackground,
   renderBackgroundForPrompt,
   emptyBackground,
+  countBeyondProgress,
 } from '../lib/host/background.js'
 import { buildMemoryPrompt } from '../lib/host/memory.js'
 import { buildCompactPrompt } from '../lib/host/compact.js'
@@ -351,7 +352,9 @@ test('读者族：这一节对模型不可见，但重写与合并都不许丢�
     '### 甲',
     '- `第3章` 身份未明',
     '## 时间与分线',
-    '### 甲线 · 第1–7年',
+    '### 主线',
+    '- `第1-4年` 骨架：她还在渡口一带。',
+    '### 【支线】甲线 · 第1–7年',
     '- `第12章` 【第3年春】与乙在渡口分离。',
     // ⚠️ 「伏笔」不再单独成节（读者 2026-10-01）：写在条目里标出来即可。
     '- `第15章` 【伏笔】他多看了一眼那封信（还没解释）',
@@ -368,9 +371,27 @@ test('读者族：这一节对模型不可见，但重写与合并都不许丢�
   assert.match(rewritten, /## 时间与分线/)
   assert.match(rewritten, /那封信/)
 
+  // ②b ⚠️ **`### 单元` 标题也必须在** —— 这条是 2026-10-01 补的，它原来只断到
+  //     `## 时间与分线` 与条目文字，于是"分组判定漏了读者族"（当时"这一节是不是
+  //     分组的"散成 6 处 `BACKGROUND_GROUPED_SECTIONS.includes(...)`，读者族那一族
+  //     没有接线）让 `### 主线` / `### 【支线】… · 第N-M章` **在每一次写盘时被静默
+  //     丢掉**，627 条守卫全绿放行。丢的不只是层级：标题里的章号区间也一起没了。
+  assert.match(rewritten, /### 主线/, '主线骨架的标题必须在（丢了这一节就退化成流水账）')
+  assert.match(rewritten, /### 【支线】甲线 · 第1–7年/, '支线单元标题（含章号区间）必须在')
+
+  // ②c 写盘往返必须**幂等**：解析 → 渲染 → 再解析 → 再渲染，结构不许逐次退化
+  assert.equal(
+    renderBackground(parseBackground(rewritten), '魔女霓裳'),
+    rewritten,
+    '写盘往返必须幂等（结构不许在第二次写盘时再掉一层）',
+  )
+
   // ③ 合并（增量补齐走的就是这条路）也必须保留
   const merged = mergeBackground(doc, parseBackground(''), { from: 21, to: 30 })
-  assert.match(renderBackground(merged, '魔女霓裳'), /## 时间与分线/)
+  const mergedText = renderBackground(merged, '魔女霓裳')
+  assert.match(mergedText, /## 时间与分线/)
+  assert.match(mergedText, /### 主线/)
+  assert.match(mergedText, /### 【支线】甲线 · 第1–7年/)
 
   // ④ 两个提示词都得知道这一节：补齐要**写出**它，压缩要**保留**它
   const fill = buildMemoryPrompt({
@@ -386,4 +407,32 @@ test('读者族：这一节对模型不可见，但重写与合并都不许丢�
   assert.ok(fill.includes('不写"它后面会怎样"'), '伏笔只许写观察')
   const compact = buildCompactPrompt({ bookTitle: '测试书', background: '（材料）' })
   assert.ok(compact.includes('## 时间与分线'), '压缩要保留这一节')
+})
+
+test('面板信号：文件里"进度之后"的条目要数得准（面板看得见、模型看不见，得说出来）', () => {
+  // ⚠️ 2026-10-01 三方评审 P2：`/background` 回给面板的是**全文**，而投喂给模型的
+  //    那一份会按进度裁掉超前条目 ⇒ 同一份文件两种视图。处置是**如实说出来**
+  //    （不是把读者的文件藏起来 —— 那份文件本来就是给他看、给他改的）。
+  const doc = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..60 -->',
+    '## 人物',
+    '### 甲',
+    '- `第3章` 已经读到的条目',
+    '- `第45章` 超前的一条',
+    '## 时间与分线',
+    '### 主线',
+    '- `第5章` 读到过',
+    '### 【支线】无面谷 · 第50-58章',
+    '- `第52章` 超前的一条',
+    '- ⭐ 影响：这一条本身不带章号',
+  ].join('\n'))
+
+  const early = countBeyondProgress(doc, 30)
+  assert.equal(early.entries, 2, '第45章那条 + 支线里带章号那条')
+  assert.equal(early.maxChapter, 52, '最远到第 52 章（58 只是 `###` 标题里的区间，不是条目）')
+
+  // ⚠️ `⭐ 影响` 那一类条目**本身不带章号** ⇒ 不算超前：宁可少报，也不要凭空指控。
+  //    它所属的单元里有带章号的条目，那段照样会被点出来。
+  assert.deepEqual(countBeyondProgress(doc, 60), { entries: 0, maxChapter: null }, '追上进度后必须归零')
+  assert.deepEqual(countBeyondProgress(doc, null), { entries: 0, maxChapter: null }, '不判定时回零')
 })

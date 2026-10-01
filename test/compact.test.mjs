@@ -204,6 +204,63 @@ test('校验：丢了人物 → 整批丢弃（这是最不可接受的一种）
   assert.match(verdict.reason, /乙/, '要说出丢的是谁，用户才知道怎么补救')
 })
 
+test('校验：读者族被删 → 整批丢弃（它不进提示词，前两条口径都够不到它）', () => {
+  // ⚠️ 这条守卫是 2026-10-01 三方评审的 P1 补的：`beforeChars/afterChars` 量的是
+  //    **注入**六节（`renderBackgroundForPrompt` 只遍历 `BACKGROUND_INJECTED_SECTIONS`），
+  //    而当时的「保主体」只跑注入族 ⇒ 压缩模型把整个「时间与分线」（含每个单元的
+  //    `⭐ 影响`）删光，只要注入六节小了一点，这次压缩仍然判 `ok:true` 并落盘。
+  //    而这一族**只有读者能重建**：AI 永远读不到它，也就永远纠不了它。
+  const before = docOf([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明，且这一段特意写长一些好让"注入六节变小"有个真实的余地',
+    '## 时间与分线',
+    '### 主线',
+    '- `第1-4年` 骨架：她还在渡口一带。',
+    '### 【支线】无面谷 · 第5-9章',
+    '- `第5章` 起：接任务入谷。',
+    '- `第9章` 收：出谷。',
+    '- ⭐ 影响：得《X 功法》。',
+  ])
+
+  // 注入六节**真的变小了** —— 所以 `COMPACT_NO_SHRINK` 不会顺手兜住这件事
+  // （一次被接受的压缩，前提本来就是"注入六节变小了"）。
+  const shrunk = docOf([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明',
+    '## 时间与分线',
+    '### 主线',
+    '- `第1-4年` 骨架：她还在渡口一带。',
+    '### 【支线】无面谷 · 第5-9章',
+    '- `第5章` 起：接任务入谷。',
+  ])
+
+  const verdict = validateCompaction(before, shrunk)
+  assert.equal(verdict.ok, false, '读者族丢了条目却判通过 —— 这一节只有读者能重建')
+  assert.match(verdict.reason, /^COMPACT_LOST_READER_ENTRIES/)
+  assert.match(verdict.reason, /时间与分线/, '要说出是哪一节丢了')
+
+  // 反面：读者族**原样照抄**、只压注入六节 ⇒ 必须通过（否则这条守卫会挡住正常压缩）
+  const untouched = docOf([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明',
+    '## 时间与分线',
+    '### 主线',
+    '- `第1-4年` 骨架：她还在渡口一带。',
+    '### 【支线】无面谷 · 第5-9章',
+    '- `第5章` 起：接任务入谷。',
+    '- `第9章` 收：出谷。',
+    '- ⭐ 影响：得《X 功法》。',
+  ])
+  const pass = validateCompaction(before, untouched)
+  assert.equal(pass.ok, true, `照抄读者族的压缩必须通过（实际：${pass.reason ?? ''}）`)
+})
+
 test('校验：覆盖区间被改小 → 整批丢弃（那等于凭空忘掉一段前文）', () => {
   const after = docOf([
     '<!-- drc-background: schema=1 covered=1..4 -->',

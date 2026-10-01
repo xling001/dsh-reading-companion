@@ -354,4 +354,29 @@ test('落点：background.md 与 notes.md 走同一个落点（单一收口的�
   }
 })
 
+test('移除：`keepNotes` 保留的是**活的那一份**（落在工作区时不能拷插件目录里的空壳）', () => {
+  // ⚠️ 2026-10-01 三方评审 P2：旧的实现只从 `bookDir` 拷 `notes.md`，而笔记的落点
+  //    可能是**工作区**（`artifactPath` 是唯一收口）—— `bookDir` 下那份往往只是
+  //    导入时建的空骨架。于是"我帮你把笔记留了一份"是一句假话，
+  //    而假的安全感比没有更坏。
+  const f = makeFixture()
+  try {
+    f.library.bind(f.book.bookId, 'session-a', null, f.workspaceDir)
+    const location = f.library.location(f.book.bookId)
+    mkdirSync(location.dir, { recursive: true })
+    const live = '# 《夜行》· 读书笔记\n\n## 第一章\n\n- 摘抄：雪落得很慢\n'
+    writeFileSync(location.notesPath, live, 'utf8')
+
+    const result = f.library.remove(f.book.bookId, { keepNotes: true })
+    assert.ok(result.notesKeptAt, '必须给出保留路径')
+    assert.equal(
+      readFileSync(result.notesKeptAt, 'utf8'),
+      live,
+      '保留的必须是工作区那份活的笔记，而不是插件目录里的空骨架',
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
 //#endregion

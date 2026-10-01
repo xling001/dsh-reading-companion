@@ -15,6 +15,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createLibrary, resolveInboxDir } from '../lib/host/library.js'
+import { parseBackground } from '../lib/host/background.js'
 import { parseNotes } from '../lib/host/notes.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -493,6 +494,117 @@ test('书库：损坏的 library.json 不让插件崩，而是回落为空书架
     const listed = f.library.list()
     assert.deepEqual(listed.books, [])
     assert.equal(listed.recovered, true, '必须如实报告索引已损坏')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：索引损坏时**导入被拒绝**，且绝不覆写那份索引（2026-10-01 三方评审 P1）', () => {
+  const f = makeFixture()
+  try {
+    f.library.importBook({ absPath: f.sourcePath })
+    const corrupt = '{ 这不是 JSON'
+    writeFileSync(f.library.paths.library, corrupt)
+
+    // ⚠️ 从前这条路是"静默回空书架 → 追加这一本 → 写回去"，于是整个索引变成
+    //    "只剩这一本"：书的目录、笔记、背景认识都还在盘上，索引里却再也找不到
+    //    它们，而代码里**没有任何重建入口**。现在必须在**写任何文件之前**就拒绝。
+    assert.throws(
+      () => f.library.importBook({ absPath: f.sourcePath }),
+      /LIBRARY_INDEX_CORRUPT/,
+    )
+    assert.equal(
+      readFileSync(f.library.paths.library, 'utf8'),
+      corrupt,
+      '那份坏索引必须原样留着，好让读者能修它',
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('背景认识：整份覆写前发现文件被改过 → 拒写（BACKGROUND_CHANGED），不吞掉别人的写入', () => {
+  const f = makeFixture()
+  try {
+    const book = f.library.importBook({ absPath: f.sourcePath }).book
+    const mk = (lines) => parseBackground(lines.join('\n'))
+    f.library.backgroundMerge(book.bookId, mk(['## 人物', '### 甲', '- `第1章` 甲登场']), { first: 1, last: 1 })
+    const snapshot = f.library.background(book.bookId).markdown
+
+    // 压缩跑着的时候（一次长模型调用），补齐或读者又把文件写了一次
+    f.library.backgroundMerge(book.bookId, mk(['## 世界观', '- `第2章` 新增设定']), { first: 2, last: 2 })
+
+    assert.throws(
+      () => f.library.backgroundCompact(book.bookId, mk([
+        '<!-- drc-background: schema=1 covered=1..1 -->',
+        '## 人物',
+        '### 甲',
+        '- `第1章` 甲登场',
+      ]), { expectedMarkdown: snapshot }),
+      /BACKGROUND_CHANGED/,
+    )
+    // ⚠️ 关键断言：那次并发写入必须**还在**（整份覆盖会把它静默抹掉）
+    assert.match(f.library.background(book.bookId).markdown, /新增设定/)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：索引损坏之后 rebuildIndex 能把书找回来（2026-10-01 评审 P1 的恢复入口）', () => {
+  const f = makeFixture()
+  try {
+    const book = f.library.importBook({ absPath: f.sourcePath }).book
+    const corrupt = '{ 这不是 JSON'
+    writeFileSync(f.library.paths.library, corrupt, 'utf8')
+    assert.deepEqual(f.library.list().books, [], '前提：损坏后读回来是空书架（书看着"没了"）')
+
+    const preview = f.library.rebuildIndex({ apply: false })
+    assert.equal(preview.indexRecovered, true, '预演必须如实报出索引当前是损坏状态')
+    assert.equal(preview.missing.length, 1, '预演必须报出能找回 1 本')
+    assert.equal(preview.applied, false, '预演不许写盘')
+
+    const report = f.library.rebuildIndex({ apply: true })
+    assert.equal(report.applied, true)
+    assert.ok(report.backupPath, '写之前必须整份备份')
+    assert.equal(readFileSync(report.backupPath, 'utf8'), corrupt, '备份的必须是原样那份坏索引')
+    assert.deepEqual(
+      f.library.list().books.map((item) => item.bookId),
+      [book.bookId],
+      '重建之后书必须回到书架上（正文与笔记一直都在盘上）',
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：rebuildIndex 能修"索引里只剩别的书"这种终态（不依赖损坏）', () => {
+  const f = makeFixture()
+  try {
+    const book = f.library.importBook({ absPath: f.sourcePath }).book
+    // 这是 P1 那个 bug 留下的终态：索引本身合法，但里面没有这本书。
+    writeFileSync(f.library.paths.library, JSON.stringify({ schemaVersion: 1, books: [] }), 'utf8')
+
+    const report = f.library.rebuildIndex({ apply: true })
+    assert.deepEqual(report.missing.map((item) => item.bookId), [book.bookId])
+    assert.deepEqual(f.library.list().books.map((item) => item.bookId), [book.bookId])
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：rebuildIndex 对"读不出 meta.json"的书**保留**索引条目（读不出 ≠ 不存在）', () => {
+  const f = makeFixture()
+  try {
+    const book = f.library.importBook({ absPath: f.sourcePath }).book
+    rmSync(join(f.library.paths.bookDir(book.bookId), 'meta.json'), { force: true })
+
+    const report = f.library.rebuildIndex({ apply: true })
+    assert.deepEqual(report.unreadable, [book.bookId], '必须如实报出读不出的目录')
+    assert.deepEqual(
+      f.library.list().books.map((item) => item.bookId),
+      [book.bookId],
+      '不能因为读不出 meta 就把这本书从索引里删掉',
+    )
   } finally {
     f.cleanup()
   }
