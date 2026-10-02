@@ -19,7 +19,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -164,7 +164,39 @@ test('路径闸：`.` / `..` 不能绕过（回归）', () => {
   }
 })
 
-test('路径折叠：只折 `.` / `..` / 空段，不碰含点的文件名', () => {
+test('路径闸：Windows 备用数据流（`::$DATA` / `:$DATA` / 尾随冒号）与尾随点空格不能绕过（回归）', () => {
+  // ⚠️ 2026-10-02 三方评审 P1：`. / ..` 只是"同一文件的另一种写法"里的**一种**。
+  //
+  //   · `content.txt::$DATA` —— `filename::` 指的是**文件本身那个未命名数据流**，
+  //     读出来**就是文件内容**（评审时实测：`readFileSync('<普通文件>::$DATA')`
+  //     正常返回该文件的内容）。而正则要求 `content.txt` 后面紧跟分隔符或结尾
+  //     ⇒ 多一个 `::$DATA` 就**静默放行**，读者没读到的正文被读出来。
+  //   · 尾随的 `.` 与空格 —— Win32 打开文件时会忽略它们。
+  //
+  // 这条守卫的判据是**语法形态逐个穷举**（不是"记得有这几条"）：凡是"操作系统会
+  // 把它解析回同一个文件"的写法，都必须被拦。
+  const deps = { bookIdForSession: () => undefined }
+  const read = (p) => spoilerGuardReason({ name: 'read', arguments: { file_path: p } }, deps)
+
+  for (const name of RAW_TEXT_ARTIFACTS) {
+    for (const suffix of ['::$DATA', ':$DATA', ':', ':任意流名']) {
+      const p = `books/${BOOK_HEX}/${name}${suffix}`
+      assert.ok(typeof read(p) === 'string', `应拦截（备用数据流）：${name}${suffix}`)
+    }
+    assert.ok(typeof read(`books/${BOOK_HEX}/${name}.`) === 'string', `应拦截（尾随点）：${name}.`)
+    assert.ok(typeof read(`books/${BOOK_HEX}/${name} `) === 'string', `应拦截（尾随空格）：${name} `)
+  }
+
+  // 绝对路径 + 反斜杠形态（真实调用最常见的样子）。
+  assert.ok(typeof read(`C:\\Users\\someone\\.dsh\\dsh-reading-companion\\books\\${BOOK_HEX}\\content.txt::$DATA`) === 'string')
+  // `\\?\` 长路径前缀：正则不是锚定的，折叠后仍然能看见 `books/<hex>/…`。
+  assert.ok(typeof read(`\\\\?\\C:\\x\\books\\${BOOK_HEX}\\content.txt`) === 'string')
+  // 与本题无关的冒号（盘符、普通文件名里的冒号）不该制造新的拦截方向 —— 这里只要求
+  // "放行"仍然成立，不要求折叠结果长得一样。
+  assert.equal(read('C:\\tmp\\a:b.txt'), undefined)
+})
+
+test('路径折叠：只折 `.` / `..` / 空段，不碰含点的文件名，且折掉流后缀与尾随点', () => {
   // 折成什么样不重要，重要的是**只往"多加拒绝"的方向偏**。
   assert.equal(foldPathSegments('a/b/c'), 'a/b/c')
   assert.equal(foldPathSegments('a/./b'), 'a/b')
@@ -176,6 +208,15 @@ test('路径折叠：只折 `.` / `..` / 空段，不碰含点的文件名', () 
   assert.equal(foldPathSegments('..content.txt'), '..content.txt')
   // 越出根的 `..` 折到空、不抛错（这条只用于多加拒绝，不用于判断放行）。
   assert.equal(foldPathSegments('../../etc/passwd'), 'etc/passwd')
+  // ---- 2026-10-02 新增：流后缀 / 尾随点空格 / 盘符冒号 ----
+  assert.equal(foldPathSegments('books/x/content.txt::$DATA'), 'books/x/content.txt')
+  assert.equal(foldPathSegments('books/x/content.txt:'), 'books/x/content.txt')
+  assert.equal(foldPathSegments('books/x/content.txt:$DATA'), 'books/x/content.txt')
+  assert.equal(foldPathSegments('books/x/content.txt.'), 'books/x/content.txt')
+  assert.equal(foldPathSegments('books/x/content.txt '), 'books/x/content.txt')
+  // 盘符那个冒号在第 1 位，必须留着（折掉它会把 `C:` 变成 `C`）。
+  assert.equal(foldPathSegments('C:\\a\\b'), 'C:/a/b')
+  assert.equal(foldPathSegments('C:'), 'C:')
   // 非字符串一律回落到空串，不抛错。
   assert.equal(foldPathSegments(null), '')
   assert.equal(foldPathSegments(42), '')
@@ -1120,6 +1161,113 @@ test('绑定：session- 前缀两侧不同形也必须能反查到书', () => {
   } finally {
     f.cleanup()
   }
+})
+
+test('绑定：同形的会话别名**不能**绑到两本书（2026-10-02 三方评审 P2）', () => {
+  // ⚠️ 从前判重只看**精确键** `bySession[sessionId]`，而反查（`bookForSession`）会按
+  //    `normalizeSessionId` 兜底 ⇒ 用 `session-abc` 绑 A、再用 `abc` 绑 B **两次都成功**，
+  //    而同一场对话按两种写法反查会得到**两本不同的书**。`bookForSession` 正是投喂边界、
+  //    路径闸、联网闸三者共用的入口 ⇒ 最坏是拿 A 书的进度去裁 B 书的正文（真实剧透）。
+  const f = makeFixture()
+  try {
+    const bookA = f.book.bookId
+    const second = join(f.root, '第二本.txt')
+    writeFileSync(second, Buffer.from([
+      '第一章 甲', '甲'.repeat(400), '', '第二章 乙', '乙'.repeat(400),
+    ].join('\n'), 'utf8'))
+    const bookB = f.library.importBook({ absPath: second, title: '第二本' }).book.bookId
+    assert.notEqual(bookA, bookB, '前提：这是两本不同的书')
+
+    f.library.bind(bookA, 'session-abc')
+    // 同形的另一种写法必须被判成"这个会话已经绑过了"。
+    assert.throws(
+      () => f.library.bind(bookB, 'abc'),
+      /SESSION_ALREADY_BOUND/,
+      '同一场对话的另一种写法不许绑到另一本书',
+    )
+
+    // 反查：两种写法都只能指向 A。
+    assert.equal(f.library.bookForSession('abc'), bookA)
+    assert.equal(f.library.bookForSession('session-abc'), bookA)
+
+    // 表里只留**一个**键（归一化那一个）—— 并存两个键正是这个洞的形状。
+    const bindings = JSON.parse(readFileSync(join(f.root, 'storage', 'bindings.json'), 'utf8'))
+    assert.deepEqual(Object.keys(bindings.bySession), ['abc'], '只许留归一化后的那一个键')
+
+    f.library.unbind(bookA)
+    assert.equal(f.library.bookForSession('abc'), undefined, '解绑要按归一化删干净')
+    assert.equal(f.library.bookForSession('session-abc'), undefined)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('绑定：老文件里带 `session-` 前缀的键，也挡得住别名撞车（数据兼容）', () => {
+  // 老版本的 `bindings.json` 里键就是带前缀的那一种。升级之后如果判重只看精确键，
+  // 那份老数据会立刻允许"另一本书用裸 UUID 绑同一场对话"。
+  const f = makeFixture()
+  try {
+    const bookA = f.book.bookId
+    const second = join(f.root, '第三本.txt')
+    writeFileSync(second, Buffer.from([
+      '第一章 丙', '丙'.repeat(400), '', '第二章 丁', '丁'.repeat(400),
+    ].join('\n'), 'utf8'))
+    const bookB = f.library.importBook({ absPath: second, title: '第三本' }).book.bookId
+
+    // 先正常绑一次（让绑定表存在），再把它改写成"老形态"：键带 `session-` 前缀。
+    f.library.bind(bookA, 'abc')
+    const bindingsPath = join(f.root, 'storage', 'bindings.json')
+    const current = JSON.parse(readFileSync(bindingsPath, 'utf8'))
+    writeFileSync(bindingsPath, JSON.stringify({
+      schemaVersion: current.schemaVersion ?? 1,
+      books: current.books,
+      bySession: { 'session-abc': bookA },
+    }), 'utf8')
+
+    assert.throws(
+      () => f.library.bind(bookB, 'abc'),
+      /SESSION_ALREADY_BOUND/,
+      '老键也是"同一场对话"，不许被绕过',
+    )
+    assert.equal(f.library.bookForSession('abc'), bookA)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('路径闸：深嵌套的工具参数也要扫到（2026-10-02 三方评审 P3-6）', () => {
+  // ⚠️ 从前 `collectStrings` 写的是 `depth = 3`（注释还写着"够用且不会失控"）——
+  //    可工具参数的嵌套深度**由工具自己决定**，不是我们能假定的。第 4 层的
+  //    `content.txt` 会被静默放行 —— 与 ADS 那次是同一类问题：
+  //    **闸门只覆盖"它想到的形态"，而攻击面是"所有形态"**。
+  const deps = { bookIdForSession: () => undefined }
+
+  let deep = { file_path: `books/${BOOK_HEX}/content.txt` }
+  for (let i = 0; i < 8; i += 1) deep = { wrapper: deep }
+  assert.ok(
+    typeof spoilerGuardReason({ name: 'read', arguments: deep }, deps) === 'string',
+    '第 9 层的原始正文路径也必须拦得住',
+  )
+
+  const deepArray = { paths: [[[[[[`books/${BOOK_HEX}/chapters.json`]]]]]] }
+  assert.ok(
+    typeof spoilerGuardReason({ name: 'grep', arguments: deepArray }, deps) === 'string',
+    '数组里的深嵌套同理',
+  )
+
+  // ⚠️ 遍历整棵树就必须防环：宿主给过来的可能是带环的活对象。带环**不许把它转死**。
+  const cyclic = {}
+  cyclic.self = cyclic
+  cyclic.leaf = 'C:\\tmp\\note.md'
+  assert.equal(spoilerGuardReason({ name: 'read', arguments: cyclic }, deps), undefined, '带环 + 无关文件 → 放行')
+
+  const cyclicHit = {}
+  cyclicHit.self = cyclicHit
+  cyclicHit.leaf = `books/${BOOK_HEX}/source.txt`
+  assert.ok(
+    typeof spoilerGuardReason({ name: 'read', arguments: cyclicHit }, deps) === 'string',
+    '带环 + 命中 → 照样拦',
+  )
 })
 
 test('防剧透：未绑定时段落为空（对宿主 = 无贡献）', () => {

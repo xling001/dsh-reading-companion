@@ -539,6 +539,44 @@ test('分节作业：一节的失败**重试一次** —— "没睡醒"不该让
   )
 })
 
+test('分节作业：报出来的耗时**含重试那一趟**（2026-10-02 三方评审 P3-4）', async () => {
+  // ⚠️ 从前 `elapsedTotal = Math.max(one.elapsedMs)`，只取**最终那一次** ⇒
+  //    "某节重试过一次"时界面报的耗时**偏小**——而读者恰恰是靠这个数判断
+  //    "这次为什么慢了一倍"。重试与正试是同一节串行发生的，所以是**相加**。
+  const before = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物关系',
+    '- 甲 ↔ 乙：曾经是很好的朋友，后来因为门派的事闹翻了（`第2章`）',
+  ].join('\n'))
+  let attempts = 0
+  const compactor = createCompactor({
+    startRun: async (spec) => {
+      const section = String(spec.label).split(':').pop()
+      if (section === '人物关系') {
+        attempts += 1
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        if (attempts === 1) return { output: [] } // 第一次"没睡醒"（空输出）
+        return { output: [{ type: 'text', text: '## 人物关系\n- 甲 ↔ 乙：朋友反目。' }] }
+      }
+      return { output: [{ type: 'text', text: `## ${section}\n- \`第1章\` 原样。` }] }
+    },
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
+  assert.equal(result.ok, true, `应当重试成功：${JSON.stringify(result.reason ?? '')}`)
+  assert.equal(attempts, 2, '前提：这一节确实重试过一次')
+  assert.ok(
+    result.elapsedMs >= 55,
+    `耗时必须含重试那一趟（两趟各 ~30ms），实际 ${result.elapsedMs}ms`,
+  )
+  assert.ok(
+    result.retriedSections?.[0]?.wastedMs >= 25,
+    `重试那趟的耗时也要如实带着，实际 ${JSON.stringify(result.retriedSections)}`,
+  )
+})
+
 test('分节作业（并发）：各节的调用**同时开跑** —— wall-clock ≈ 最慢的一节，不是相加', async () => {
   // 读者拍板（2026-10-02）：分节压缩并发跑。钉法：每次 startRun 记下开始时刻并拖 60ms
   // ⇒ 若是串行，第二节的 start 必然晚于第一节的 end；并发的⇒ 两个 start 都早于任一 end。

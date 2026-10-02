@@ -565,6 +565,68 @@ test('倒退过滤：段落式人物条目必须**按句**过滤（段落式带�
   assert.match(inlineOut.text, /出场/, '同一句里的括注不受影响')
 })
 
+test('倒退过滤：锚**不在句读之后**也必须切（2026-10-02 三方评审 P1 —— 逗号分隔最常写）', () => {
+  // ⚠️⚠️ 上面那条只钉了「。分隔」这一种写法，而中文里最常见的其实是**逗号**：
+  //     `- \`第3章\` 甲遇见同伴，\`第50章\` 其实是幕后黑手`。
+  //     旧实现只在锚紧跟句读（。！？；"」）时才切 ⇒ 这种条目 `pieces.length === 1`
+  //     ⇒ 上游"多章号段落才参与句级过滤"的分支**碰不到它** ⇒ **整条放行**，
+  //     第 50 章的事实被注入给"正读到第 20 章"的那一轮。
+  //     评审实测：`，` / 空格 / `：` / `（` 四种分隔写法**全部**泄漏（leaked=true、
+  //     filtered=[]）—— 因为既有夹具恰好只用 `。` 与括注，693 条守卫全绿放行。
+  //
+  //     修法（`splitParagraph`）：只要锚**不在括号里**就切；括号内的句内交叉引用
+  //     （上一条用例钉着的那种）仍然不切。
+  const deps = ['，', ' ', '：', '、', '——', '（', '[', '「']
+  for (const sep of deps) {
+    const doc = parseBackground([
+      '## 人物',
+      '### 甲',
+      `- \`第3章\` 甲遇见同伴${sep}\`第50章\` 其实是幕后黑手。`,
+    ].join('\n'))
+    const out = renderBackgroundForPrompt(doc, { budgetChars: 9000, maxChapter: 20 })
+    assert.match(out.text, /甲遇见同伴/, `已读的那半句必须留下（分隔符 ${JSON.stringify(sep)}）`)
+    assert.doesNotMatch(out.text, /幕后黑手/, `未读的那半句不许进提示词（分隔符 ${JSON.stringify(sep)}）`)
+    // "截了就要说"：丢掉的句数必须报给面板。
+    assert.equal(
+      out.filtered.find((item) => item.name === '人物')?.sentences,
+      1,
+      `被挡住的句数要如实报（分隔符 ${JSON.stringify(sep)}）`,
+    )
+  }
+
+  // ⚠️ 括号**闭合**时是"句内交叉引用"，仍然不切 —— 既有专测（上一条用例的 inline）
+  //    钉着这个行为，这里再显式锁一次"闭合 vs 未闭合"这条分界。
+  const closed = parseBackground([
+    '## 人物',
+    '### 丁',
+    '- `第3章` 出场（`第50章` 才又提到）。',
+  ].join('\n'))
+  const closedOut = renderBackgroundForPrompt(closed, { budgetChars: 9000, maxChapter: 20 })
+  assert.match(closedOut.text, /才又提到/, '闭合括号内的交叉引用不切（既有语义）')
+  // 未闭合的括号**不算内部** —— 上面 deps 里的 `（` / `[` / `「` 就是这一类
+  // （它们后面没有对应的闭合符），所以那一圈断言同时钉住了"未闭合要按安全方向切"。
+
+  // 读到第 60 章时两句都得在（切开**不丢字**，只是把一条拆成两条）。
+  const both = parseBackground(['## 人物', '### 甲', '- `第3章` 甲遇见同伴，`第50章` 其实是幕后黑手。'].join('\n'))
+  const bothOut = renderBackgroundForPrompt(both, { budgetChars: 9000, maxChapter: 60 })
+  assert.match(bothOut.text, /甲遇见同伴/)
+  assert.match(bothOut.text, /幕后黑手/)
+
+  // ⚠️ 反向：单章号条目的既有语义**不许被动到** —— "一位人物只要有早于上界的
+  //    条目，他整块都保留"是**刻意**的判定（上面第三条用例钉着）。这里用一个
+  //    "第 5 章有旧条目、第 900 章有一条最新"的人物把那条语义**再锁一次**：
+  //    本次改动只该影响"一条里有多个锚"的形态，不该影响"多条各带一个锚"。
+  const quiet = parseBackground([
+    '## 人物',
+    '### 丙',
+    '- `第5章` 出身寒门',
+    '- `第900章` 后来成了掌门',
+  ].join('\n'))
+  const quietOut = renderBackgroundForPrompt(quiet, { budgetChars: 9000, maxChapter: 20 })
+  assert.match(quietOut.text, /出身寒门/)
+  assert.match(quietOut.text, /后来成了掌门/, '单章号条目整块保留是刻意语义，本次改动不许带走它')
+})
+
 //#region 在线折叠（3.0 ②c）：离场人物折叠成锚（注入视图；文件不动）
 
 const OFFLINE_DOC = [

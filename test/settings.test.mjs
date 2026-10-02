@@ -18,7 +18,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { call, importBook, makeDir, startServer } from './helpers/server.mjs'
@@ -162,6 +162,60 @@ test('设置：非法档位被拒，且不破坏已有的值', async () => {
     assert.equal(still.body.webGate, 'off', '被拒的写入不该动到原来的值')
     assert.equal(still.body.effectiveWebGate, 'off')
     assert.equal(still.body.configWebGate, 'block-all', '默认配置仍是最严的那档')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('设置：一次请求里有一个字段非法 → **整批拒绝**，别的字段一个都不许生效（2026-10-02 三方评审 P2）', async () => {
+  // ⚠️ 旧实现是"边走边写"：先处理 `webGate`（写盘 + 更新缓存），之后才校验
+  //    `exportDir` 并可能抛错。实测过的后果：
+  //      PUT {webGate:'off', exportDir:'relative/not/absolute'}
+  //      → 400 EXPORT_DIR_NOT_ABSOLUTE（调用方以为什么都没发生）
+  //      → 但生效档位已经从 block-all 变成 **off**，而且已经落盘。
+  //    被拒绝的请求不许改到任何字段，更不许**朝着放松安全的方向**改。
+  const dir = makeDir('set-partial-reject')
+  const s = await startServer(dir)
+  try {
+    const before = await call(`${s.base}/settings`)
+    assert.equal(before.body.effectiveWebGate, 'block-all', '前提：默认是最严的档')
+
+    const rejected = await call(`${s.base}/settings`, {
+      method: 'PUT',
+      body: { webGate: 'off', exportDir: 'relative/not/absolute' },
+    })
+    assert.equal(rejected.status, 400, '相对路径必须被拒')
+    assert.equal(rejected.body.error, 'EXPORT_DIR_NOT_ABSOLUTE')
+
+    // ---- 三条都要不变：响应、磁盘、生效值 ----
+    const after = await call(`${s.base}/settings`)
+    assert.equal(after.body.webGate, null, 'webGate 连缓存都不该被写')
+    assert.equal(after.body.effectiveWebGate, 'block-all', '生效档位必须还是最严的那一档')
+    assert.equal(after.body.exportDir, null, 'exportDir 本来就没写进去')
+    // ⚠️ 整批拒绝时 `settings.json` **连创建都不该发生**（旧实现会先写一次 webGate
+    //    而把手建出来）。所以这里先判存在性，再判内容。
+    const settingsPath = join(dir, 'settings.json')
+    if (existsSync(settingsPath)) {
+      const onDisk = readFileSync(settingsPath, 'utf8')
+      assert.ok(!onDisk.includes('"off"'), `磁盘上不许出现被拒的那一档：${onDisk}`)
+    }
+
+    // 真正投喂给模型的那一段也必须照旧按 block-all 说（不是只有路由数字对）。
+    // ⚠️ 要真投喂就得先绑一本书 —— 没绑书时段落本来就是空串，那会让这条断言假绿。
+    await bindBook(s.base, dir)
+    const section = injected(s)
+    assert.match(section, /不要联网查这本书/, '注入照旧按最严档（block-all 的措辞）')
+
+    // ---- 反向：只给合法字段时照常生效（别把整批拒绝做成"什么都改不了"）----
+    const okBoth = await call(`${s.base}/settings`, {
+      method: 'PUT',
+      body: { webGate: 'block-book', exportDir: dir },
+    })
+    assert.equal(okBoth.status, 200)
+    assert.equal(okBoth.body.webGate, 'block-book')
+    assert.equal(okBoth.body.exportDir, dir)
+    assert.equal((await call(`${s.base}/settings`)).body.effectiveWebGate, 'block-book')
   } finally {
     await s.close()
     rmSync(dir, { recursive: true, force: true })

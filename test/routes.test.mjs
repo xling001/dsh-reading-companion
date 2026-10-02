@@ -240,6 +240,61 @@ test('HTTP：导入 → 书架 → 目录 → 正文 → 进度 → 绑定 → �
   }
 })
 
+test('HTTP：草稿的跨书更新与删除都必须被拒绝（2026-10-02 三方评审 P2-4）', async () => {
+  // ⚠️ 草稿表的键是**全局** `draftId`，而路由只会把 `bookId` 覆盖成 URL 里那一本
+  //    ⇒「拿 A 书的请求去改/删 B 书的草稿」在实现层看不出任何异常。旧实现的后果是：
+  //    那条草稿的 `bookId` 被改写成 A、正文被覆盖，并从 B 的列表里**消失**
+  //    （`listDrafts` 按 bookId 过滤）—— 用户手写的内容就这么搬家 + 被覆盖，不可逆。
+  const dir = makeDir()
+  const inbox = join(dir, 'inbox')
+  mkdirSync(inbox, { recursive: true })
+  const aSource = join(inbox, 'A书.txt')
+  const bSource = join(inbox, 'B书.txt')
+  writeFileSync(aSource, Buffer.from(BOOK, 'utf8'))
+  // 换掉正文里的字 ⇒ 字节不同 ⇒ 是另一本书。
+  writeFileSync(bSource, Buffer.from(BOOK.replaceAll('甲', '戊'), 'utf8'))
+
+  const s = await startServer(dir)
+  try {
+    const a = (await call(`${s.base}/library/import`, { method: 'POST', body: { absPath: aSource } })).body.book.bookId
+    const b = (await call(`${s.base}/library/import`, { method: 'POST', body: { absPath: bSource } })).body.book.bookId
+    assert.notEqual(a, b, '前提：这是两本不同的书')
+
+    const saved = await call(`${s.base}/books/${b}/drafts`, {
+      method: 'POST',
+      body: { excerpt: 'B 的摘抄', thought: 'B 的感想' },
+    })
+    const draftId = saved.body.draft.draftId
+
+    // --- 越书更新 ---
+    const hijack = await call(`${s.base}/books/${a}/drafts`, {
+      method: 'POST',
+      body: { draftId, excerpt: '被 A 改掉' },
+    })
+    assert.equal(hijack.status, 400, `越书更新必须被拒，实际 ${hijack.status}`)
+    assert.equal(hijack.body.error, 'DRAFT_OTHER_BOOK')
+
+    // --- 越书删除 ---
+    const steal = await call(`${s.base}/books/${a}/drafts/${draftId}`, { method: 'DELETE' })
+    assert.equal(steal.status, 200)
+    assert.equal(steal.body.removed, false, '不属于这本书的草稿不许被删掉')
+
+    // --- B 的草稿必须原封不动 ---
+    const stillB = await call(`${s.base}/books/${b}/drafts`)
+    assert.equal(stillB.body.drafts.length, 1, 'B 的草稿必须还在')
+    assert.equal(stillB.body.drafts[0].excerpt, 'B 的摘抄', '而且内容一个字都没被改')
+    assert.equal((await call(`${s.base}/books/${a}/drafts`)).body.drafts.length, 0, 'A 自己不该多出一条')
+
+    // --- 用对的书去删，照常能删（别把跨书保护做成"谁都删不掉"）---
+    const ok = await call(`${s.base}/books/${b}/drafts/${draftId}`, { method: 'DELETE' })
+    assert.equal(ok.body.removed, true)
+    assert.equal((await call(`${s.base}/books/${b}/drafts`)).body.drafts.length, 0)
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('HTTP：笔记全链路 —— 草稿 → 打 tag 建议 → 写入 → AI 回应只在显式要求时落盘', async () => {
   const dir = makeDir()
   const s = await startServer(dir)
@@ -716,6 +771,131 @@ test('HTTP：错误语义分明（404 / 405 / 400）', async () => {
     // 章号越界
     const noChapter = await call(`${s.base}/books/0123456789abcdef/chapters/999`)
     assert.equal(noChapter.status, 404)
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('HTTP：空 body 的 `PUT /location` 是"省略 = 重置"，不许落成 500（2026-10-02 三方评审 P2）', async () => {
+  // ⚠️ `readJsonBody` 对**空 body** resolve 的是 `undefined`（不是 null），而旧实现
+  //    写的是 `body === null || body.workspaceDir === undefined` —— `undefined === null`
+  //    为假 ⇒ 求值 `undefined.workspaceDir` 当场 TypeError ⇒ 一个文档化的合法调用
+  //    回 **500 INTERNAL**，还把原始 JS 报错文本回给了浏览器面。实测过。
+  const dir = makeDir()
+  const inbox = join(dir, 'inbox')
+  mkdirSync(inbox, { recursive: true })
+  const sourcePath = join(inbox, '夜行.txt')
+  writeFileSync(sourcePath, Buffer.from(BOOK, 'utf8'))
+
+  const s = await startServer(dir)
+  try {
+    const imported = await call(`${s.base}/library/import`, { method: 'POST', body: { absPath: sourcePath } })
+    const bookId = imported.body.book.bookId
+
+    // 完全不发 body。
+    const noBody = await call(`${s.base}/books/${bookId}/location`, { method: 'PUT' })
+    assert.equal(noBody.status, 200, `空 body = 重置，不是 500（实际 ${noBody.status}）`)
+    assert.equal(noBody.body.ok, true)
+    assert.equal(noBody.body.location.scope, 'plugin', '重置 = 回到插件自己的目录')
+
+    // `{}` 与 `{ workspaceDir: null }` 是同一条语义（三条路径都得通）。
+    assert.equal((await call(`${s.base}/books/${bookId}/location`, { method: 'PUT', body: {} })).status, 200)
+    assert.equal(
+      (await call(`${s.base}/books/${bookId}/location`, { method: 'PUT', body: { workspaceDir: null } })).status,
+      200,
+    )
+
+    // 非法值仍然要被明确拒绝（别把"不 500"做成"什么都接受"）。
+    // ⚠️ `WORKSPACE_DIR_INVALID` 在状态码表里是 **400**（请求给的目录本身不对），
+    //    不是 409 —— 409 那一族是"请求没写错、当前状态不允许"。
+    const bad = await call(`${s.base}/books/${bookId}/location`, {
+      method: 'PUT',
+      body: { workspaceDir: join(dir, '不存在的目录') },
+    })
+    assert.equal(bad.status, 400, '不存在的目录是参数不对（400），不是 500')
+    assert.equal(bad.body.error, 'WORKSPACE_DIR_INVALID')
+
+    assert.equal((await call(`${s.base}/health`)).status, 200, '服务器必须仍然可用')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('HTTP：路径里的畸形百分号编码回 400，而不是把请求挂住（2026-10-02 三方评审 P2）', async () => {
+  // ⚠️ `decodeURIComponent` 碰到畸形编码（`%E0%A4%A`）会抛 `URIError: URI malformed`，
+  //    而它从前写在路由 handler 的 try **之外** ⇒ 异常从 async handler 冒出去：
+  //    **既不回响应、也不进 500 分支**，请求就那么挂着（评审实测：客户端 30 秒超时）。
+  //    畸形 URL 是**外部输入**，必须落成一次确定的 400。
+  const dir = makeDir()
+  const s = await startServer(dir)
+  try {
+    const bad = await call(`${s.base}/books/%E0%A4%A/chapters`)
+    assert.equal(bad.status, 400, '畸形编码必须回确定的 400')
+    assert.equal(bad.body.error, 'BAD_PARAM_ENCODING')
+    // 之后的请求必须照常（证明没有把进程 / 连接搞坏）。
+    assert.equal((await call(`${s.base}/health`)).status, 200)
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('HTTP：超限请求体回 400 BODY_TOO_LARGE，而不是把连接重置掉（2026-10-02 三方评审 P2）', async () => {
+  // ⚠️ 旧实现在超限时 `reject(...)` **并 `req.destroy()`** —— 销毁 IncomingMessage 会
+  //    把底下那条 socket 一起销毁，而我们要回的 400 正是走那条 socket ⇒
+  //    客户端拿到的是 `UND_ERR_SOCKET`（连接被重置），与"服务端炸了"分不出来，
+  //    文档化的护栏等于不存在。
+  const dir = makeDir()
+  const s = await startServer(dir)
+  try {
+    const before = await call(`${s.base}/settings`)
+    const res = await fetch(`${s.base}/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ exportDir: 'x'.repeat(1024 * 1024 + 100) }),
+    })
+    assert.equal(res.status, 400, '超限必须回可读的 400，不是连接重置')
+    const parsed = await res.json()
+    assert.equal(parsed.error, 'BODY_TOO_LARGE')
+    // 被拒的请求什么都不许改。
+    const after = await call(`${s.base}/settings`)
+    assert.equal(after.body.exportDir, before.body.exportDir)
+    assert.equal((await call(`${s.base}/health`)).status, 200, '服务器必须仍然可用')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('HTTP：导入失败回的是"人能照做的一句话"，机器码挪到 code（2026-10-02 三方评审 P3-1）', async () => {
+  // ⚠️ 从前这条路的 `reason` 直接把 `paths.js` 的机器码回给客户端，而客户端是
+  //    **优先显示 reason** 的 ⇒ 读者看到的是 `FILE_NOT_FOUND` /
+  //    `PATH_OUTSIDE_IMPORT_ROOTS` 这类内部枚举，既不知道发生了什么、也不知道下一步做什么。
+  const dir = makeDir()
+  const s = await startServer(dir)
+  try {
+    const missing = await call(`${s.base}/library/import`, {
+      method: 'POST',
+      body: { absPath: join(dir, '没有这本书.txt') },
+    })
+    assert.equal(missing.status, 400)
+    assert.equal(missing.body.error, 'IMPORT_REJECTED')
+    assert.equal(missing.body.code, 'FILE_NOT_FOUND', '机器码留在 code 里给诊断用')
+    assert.match(missing.body.reason, /没找到/, 'reason 必须是给人看的一句话')
+    assert.ok(!/^[A-Z_]+$/.test(missing.body.reason), 'reason 不许是内部枚举')
+
+    const relative = await call(`${s.base}/library/import`, {
+      method: 'POST',
+      body: { absPath: 'relative.txt' },
+    })
+    assert.equal(relative.body.code, 'PATH_NOT_ABSOLUTE')
+    assert.match(relative.body.reason, /完整路径/)
+
+    const isDir = await call(`${s.base}/library/import`, { method: 'POST', body: { absPath: dir } })
+    assert.equal(isDir.body.code, 'NOT_A_REGULAR_FILE')
+    assert.ok(!/^[A-Z_]+$/.test(isDir.body.reason), '每一种拒绝理由都要是人话')
   } finally {
     await s.close()
     rmSync(dir, { recursive: true, force: true })

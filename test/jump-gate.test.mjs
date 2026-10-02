@@ -23,7 +23,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { call, makeDir, startServer } from './helpers/server.mjs'
@@ -132,6 +132,146 @@ test('跳读闸：**手动补**时缺口超阈值不自动补，回 409 且**一
     // 文件也必须一个字都没动。
     const bg = await call(`${s.base}/books/${bookId}/background`)
     assert.equal(bg.body.covered, null, '被拦下时不该推进水位线')
+  } finally {
+    await s.close()
+  }
+})
+
+test('跳读闸：**被拒的那一趟一个字节都不许改文件** —— 冷归档不许抢在闸门之前（2026-10-02 三方评审 P2）', async () => {
+  // ⚠️ 旧形状是"先冷归档、再压缩、最后才问闸门"。于是"点补齐 → 缺口很大 → 409 让读者选"
+  //    这一趟会**先**把旧条目搬进「冷档案」并落盘（连增量记录与自动备份一起写）：
+  //    读者看到的是**一次征询**（"还没做，你来选"），实际发生的是**记忆已经被改了**
+  //    —— 那些条目从此不再进上下文；而 409 的响应体里**没有** `archived`，
+  //    连"发生过什么"都不会被说出来。这条守卫钉的是"被拒的请求不许改状态"。
+  //
+  // ⚠️ 上面那条用例只断言了 `covered === null`（水位线没动）—— 而冷归档**不改** covered，
+  //    所以它对这个问题**完全不敏感**：旧实现能全绿放行。灯要打在"文件字节"上。
+  const { s, bookId, labels } = await setup('jump-gate-archive')
+  try {
+    const loc = await call(`${s.base}/books/${bookId}/location`)
+    const bgPath = loc.body.location.backgroundPath
+    mkdirSync(join(bgPath, '..'), { recursive: true })
+    const before = [
+      '<!-- drc-background: schema=1 covered=1..5 -->',
+      '# 《长书》· 背景认识',
+      '## 人物',
+      '### 甲',
+      '- `第3章` 早年的事，早已落在活跃窗口之外。',
+      '- `第4章` 还有一条。',
+      '## 世界观',
+      '- `第4章` 一条旧设定。',
+    ].join('\n')
+    writeFileSync(bgPath, before, 'utf8')
+
+    // 跳到第 150 章：缺口 1–149 章、活跃窗口 120 章 ⇒ 归档与闸门**都会想动**。
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 149, charOffset: 0 } })
+    const res = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: { ask: true } })
+
+    assert.equal(res.status, 409, '大缺口 + 手动补 ⇒ 先问一句')
+    assert.equal(res.body.error, 'LARGE_GAP')
+    assert.equal(
+      readFileSync(bgPath, 'utf8'),
+      before,
+      '被拒的那一趟必须**逐字节不变** —— 尤其不许抢跑冷归档（把旧条目搬进「冷档案」）',
+    )
+    assert.deepEqual(labels, [], '一次模型调用都没发')
+  } finally {
+    await s.close()
+  }
+})
+
+test('补齐竞态：读者在补齐期间清空 ⇒ 那一批的结果一个字都不许写回去（2026-10-02 三方评审 P2-9）', async () => {
+  // ⚠️ 补齐会先读一份底稿、再叫模型跑到几十秒到十分钟、最后才落盘；读者完全可以在
+  //    那期间点「清空重建」。而落盘前的 CAS **挡不住它** —— 那条路撞上
+  //    `BACKGROUND_CHANGED` 时会**故意不复核、直接用当前文件重做一次合并**
+  //    （那是为"读者在 Obsidian 里改了一句"设计的恢复路径）⇒ 飞在路上的那一批会把
+  //    结果合并进**刚被清空的**文件：读者看到"已清空"，几十秒后旧内容又回来了，
+  //    而且**没有任何一处会说**。
+  //
+  // 这条用例用"可控的子代理"复现那个窗口：模型调用卡在 `gate` 上不返回，
+  // 期间发一次 `reset`，然后才放行。
+  const labels = []
+  let release = null
+  const gate = new Promise((resolve) => { release = resolve })
+  const dir = makeDir('fill-reset-race')
+  const s = await startServer(dir, {
+    subagents: {
+      start: async (kind, spec) => {
+        labels.push(spec.label)
+        return {
+          result: gate.then(() => ({ output: [{ type: 'text', text: MEMORY_OUTPUT }] })),
+          dispose: async () => {},
+        }
+      },
+    },
+    agents: { get: () => ({ id: 'parent' }) },
+  })
+  try {
+    const bookId = await importLongBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess-race' } })
+    // 缺口小（1–2 章）⇒ 不撞跳读闸，直奔模型调用。
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 2, charOffset: 0 } })
+
+    const filling = call(`${s.base}/books/${bookId}/background/fill`, {
+      method: 'POST',
+      body: { sessionId: 'sess-race' },
+    })
+    // 等它真的把调用发出去（否则下面那次 reset 可能与它错开）。
+    for (let i = 0; i < 100 && labels.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.ok(labels.length > 0, '前提：补齐已经发起模型调用（这一批正卡在模型里）')
+
+    const reset = await call(`${s.base}/books/${bookId}/background/reset`, { method: 'POST' })
+    assert.equal(reset.status, 200, '读者点「清空重建」必须成功')
+
+    release()
+    const done = await filling
+    assert.equal(done.status, 200, JSON.stringify(done.body))
+    assert.equal(done.body.resetDuringFill, true, '必须如实回报"读者在这期间清空过"')
+
+    const bg = await call(`${s.base}/books/${bookId}/background`)
+    assert.equal(bg.body.covered, null, '清空之后不许被在飞的那一批填回去')
+    assert.ok(
+      !bg.body.markdown.includes('抽样得到的设定'),
+      '那一批的产物一个字都不许落盘（清空是读者的显式动作，不能被悄悄撤销）',
+    )
+  } finally {
+    await s.close()
+  }
+})
+
+test('冷归档：增量记录（历代备份那件）的成败要如实带上（2026-10-02 三方评审 P3-5）', async () => {
+  // ⚠️ 从前 `writeArchiveDelta(...)` 的返回值被**直接丢掉** —— 于是"历代备份三件套"
+  //    里的那件（`background.history/` 增量）写失败时，`archived` 里没有这个事实，
+  //    读者以为备份齐全。而那条 delta 记的是"这一笔搬走了什么"的**原文**，少一件不可逆。
+  const { s, bookId, labels } = await setup('archive-history')
+  try {
+    const loc = await call(`${s.base}/books/${bookId}/location`)
+    const bgPath = loc.body.location.backgroundPath
+    mkdirSync(join(bgPath, '..'), { recursive: true })
+    writeFileSync(bgPath, [
+      '<!-- drc-background: schema=1 covered=1..5 -->',
+      '# 《长书》· 背景认识',
+      '## 人物',
+      '### 甲',
+      '- `第3章` 早年的事，早已落在活跃窗口之外。',
+      '- `第4章` 还有一条。',
+    ].join('\n'), 'utf8')
+
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 149, charOffset: 0 } })
+    const res = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: { mode: 'all' } })
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    assert.ok(res.body.archived?.moved > 0, `前提：这一趟确实归档了条目，实际 ${JSON.stringify(res.body.archived)}`)
+    // ★ 这条钉的是**接线**：字段一旦被丢回 `undefined`，这一句就红。
+    assert.equal(res.body.archived.historyWritten, true, '增量记录的成败必须如实回报')
+    // 顺带确认它真的写下了（不是"报了 true 但没落盘"）。
+    const names = readdirSync(join(bgPath, '..', 'background.history'))
+    assert.ok(
+      names.some((name) => name.endsWith('-归档.md')),
+      `历代增量记录应当真的落盘，实际目录里是 ${JSON.stringify(names)}`,
+    )
+    assert.ok(labels.length > 0)
   } finally {
     await s.close()
   }

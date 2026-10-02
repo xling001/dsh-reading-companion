@@ -791,6 +791,16 @@ test('接线守卫：三个选项卡 + 删除/恢复/彻底删除（v1.57）', (
   assert.ok(!source.includes('/notes/${note.id}/${kind}'), '路径不许拼 kind')
   // 彻底删除 / 清空是不可逆的 → 必须走确认条。
   assert.match(source, /purgeTarget[\s\S]{0,500}confirmBar\(/, '彻底删除/清空要走 confirmBar')
+  // ⚠️ **清空必须传 `'all'`，不许把列表里看到的那些 id 传过去**（2026-10-02 三方评审 P2-8）：
+  //    回收站列表一次只取 `TRASH_PAGE_LIMIT`（200）条，传 id = **只清前 200 条**，
+  //    而确认条的文案用的是宿主报的 `total`（"把里面 N 条真正抹掉"）⇒ 说的和做的
+  //    不是一个数，而且"清空"清不干净。宿主本来就支持 `{ all: true }`。
+  assert.ok(
+    source.includes("runPurge(purgeTarget === 'all' ? 'all' : [purgeTarget.id])"),
+    '清空要传 all，不是当前页的 id 列表',
+  )
+  assert.ok(source.includes("target === 'all' ? { all: true } : { ids: target }"), 'runPurge 要把它翻成 { all: true }')
+  assert.ok(!source.includes('trashNotes.map((note) => note.id)'), '不许再把"看得见的那些 id"当成清空')
   assert.ok(source.includes("mode: 'trash'"), '回收站复用同一个 NoteList（换模式，不写第二套列表）')
   assert.ok(source.includes('onTrash: trashOne'), '笔记页那条列表要把删除接上去')
 
@@ -804,6 +814,54 @@ test('接线守卫：三个选项卡 + 删除/恢复/彻底删除（v1.57）', (
   const listAt = source.indexOf('三路列表：回收站 / 草稿 / 笔记')
   assert.ok(tabRowAt > 0 && listAt > tabRowAt, '三个 tab 要常驻在列表区（就在三路列表之前）')
   assert.ok(source.includes('drc-label\' }, \'回收站\')'), '回收站那行重复的计数标签要去掉')
+})
+
+test('接线守卫：第三方评审第四批的界面修复（2026-10-02）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // ---- P2-10：回收站**取不到 ≠ 空的** ----
+  // 从前 catch 里把列表与计数一起归零，界面就渲染「回收站是空的。」—— 一次读取失败被
+  // 说成"你没删过东西"，把一份可恢复的数据藏起来。这三句各钉一环：状态、赋值、渲染。
+  assert.ok(source.includes('const [trashError, setTrashError] = useState(null)'), '要有一个回收站错误状态')
+  assert.ok(source.includes('setTrashError(describeError(error))'), '取不到时要记下错误文案')
+  assert.ok(source.includes('setTrashError(null)'), '取到时要把错误清掉')
+  assert.match(source, /trashError !== null[\s\S]{0,600}回收站这次没读到/, '取不到时渲染"没读到"，不是"空的"')
+  assert.ok(!/\.catch\(\(\) => \{[\s\S]{0,200}setTrashTotal\(0\)/.test(source), 'catch 里不许再"静默当空"（那条老写法）')
+
+  // ---- P2-11：目录的卷与章节要键盘可达 ----
+  // 这是插件的主导航路径；从前卷标题是带 onClick 的 div、章节是带 onClick 的 li，
+  // 键盘用户展不开卷、也进不了章节。这里按顺序钉：role / tabIndex / 键盘处理 / 状态语义。
+  assert.ok(source.includes("role: 'button',\n                              tabIndex: 0,\n                              'aria-expanded': open,"), '卷标题要能聚焦并播报展开状态')
+  assert.ok(source.includes("'aria-current': chapter.index === current ? 'true' : undefined"), '章节要能播报"当前章"')
+  assert.ok((source.match(/if \(event\.key !== 'Enter' && event\.key !== ' '\) return/g) ?? []).length >= 2, '卷与章节都要处理 Enter / 空格')
+  assert.ok(source.includes('const toggleVolume = () => {'), '鼠标与键盘要共用同一条开关路径')
+
+  // ---- P2-12：笔记表单的 label 要真的绑到控件上 ----
+  for (const id of ['drc-note-excerpt', 'drc-note-thought', 'drc-note-tags', 'drc-note-reply']) {
+    assert.ok(source.includes(`htmlFor: '${id}'`), `label 要用 htmlFor 指向 ${id}`)
+    assert.ok(source.includes(`id: '${id}'`), `${id} 这个 id 要真的写在控件上`)
+  }
+
+  // ---- P3-2：刷新失败必须有人接 ----
+  // `reloadNotesPage` 被三条路**不 await 地**调用；从前没有 catch ⇒ 未处理拒绝 +
+  // 界面停在旧列表却显示"已移入回收站"。
+  // ⚠️ 断言用**切片 + 关键片段**，不用长正则：换行与注释一调整，长正则就假红
+  //    （这一条我自己刚踩过一次）。
+  const reloadAt = source.indexOf('const reloadNotesPage = useCallback')
+  assert.ok(reloadAt > 0, '找不到 reloadNotesPage —— 断言的前提没了')
+  const reloadSlice = source.slice(reloadAt, reloadAt + 1200)
+  assert.ok(reloadSlice.includes('.catch((error)'), 'reloadNotesPage 要有 catch（否则失败是未处理的拒绝）')
+  assert.ok(reloadSlice.includes('不是最新的'), '失败时要如实说"列表可能不是最新的"')
+
+  // ---- P3-3：自动保存失败不许静默 ----
+  assert.ok(source.includes('const [autosaveFailed, setAutosaveFailed] = useState(false)'), '要有"上次自动保存失败"的常驻标记')
+  assert.ok(source.includes('setAutosaveFailed(true)'), '自动保存失败要置起标记')
+  assert.ok(source.includes('setAutosaveFailed(false)'), '存成功要撤掉标记')
+  assert.match(source, /autosaveFailed\s*\n?\s*\? h\(/, '标记要在界面上渲染出来（常驻，不是 toast）')
+
+  // ---- P3-5：增量记录没写成时要明说 ----
+  assert.ok(source.includes('data.archived?.historyWritten === false'), '归档增量没写成时要有一句提示')
 })
 
 test('接线守卫：对齐与回收站呈现（v1.62）', () => {
@@ -2777,9 +2835,12 @@ test('竞态守卫：每个按书加载的资源各自装了守卫', () => {
     // ⚠️ 2026-10-01 三方评审查出：`NotesView` 那几条加载器**一个守卫都没有** ——
     //    切书 / 翻页 / 连点两次删除时，先发的请求可能后回来，把旧数据写进已经
     //    翻篇的界面。下面三条是**补接**的，不是新资源。
-    // 笔记列表：`reloadNotesPage` / `refreshNotes` / `loadPage` 三处写同一份状态
-    // （最后一处 then 与 catch 都要验票）。
-    ['notesGuard', 4],
+    // 笔记列表：`reloadNotesPage`（成功 + **失败**）/ `refreshNotes` / `loadPage`
+    // 三处写同一份状态。
+    // ⚠️ 2026-10-02 第四批：`reloadNotesPage` 补了 catch（刷新失败要如实说一句，
+    //    见 P3-2），而那一条**也要验票** —— 否则迟到的失败会被记到另一本书的界面上。
+    //    所以是 4 → 5：这不是"多了一处"，是同一处从"只有成功路径"变成"两条路径"。
+    ['notesGuard', 5],
     // 草稿列表：只在成功路径写状态，所以只有一处提前返回。
     ['draftsGuard', 1],
     // 回收站：成功与失败两条路径都要验票 —— 失败分支会"清零"，
