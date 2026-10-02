@@ -924,7 +924,7 @@ test('接线守卫：编辑区脏了要先问一句、删除后不许弹回第�
   assert.ok(trashAt > 0 && pagingAt > trashAt, '两个锚点都要在（否则下面的切片是空的，守卫会假绿）')
   // ⚠️ 断言前**必须剥掉注释**：我自己写在那两处旁边的说明里就有「而不是 `refresh()`」
   // 这句话 —— 直接对原文 `includes('refresh()')` 会被自己的文档绊倒（本项目**第四次**，
-  // 见 design-v1 的 v1.58 §346）。反向守卫只盯**代码形态**。
+  // 见 `docs/design-v1-archive.md` 的 v1.58 §346）。反向守卫只盯**代码形态**。
   const handlers = source.slice(trashAt, pagingAt)
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/[^\n]*/g, '')
@@ -1134,7 +1134,7 @@ test('补齐结果转文案：三态各自成句，且**没有成功就不能说
 
 test('★ 补齐结果的接线：发笔记那条路径不再无条件自称「记忆已更新」', () => {
   // 为什么非要有静态断言：`memoryFillClause` 是纯函数，上面那条测试证明它**会**分三态。
-  // 但把调用处换回硬编码句子，纯函数测试**仍然全绿**——§203 记过这个教训
+  // 但把调用处换回硬编码句子，纯函数测试**仍然全绿**——docs/design-v1-archive.md §203 记过这个教训
   // （函数对而没接线照样是 bug）。这里钉的是**接线**本身。
   const source = readFileSync(join(ROOT, 'lib/client.js'), 'utf8')
 
@@ -1310,6 +1310,64 @@ test('接线守卫：目录页真的渲染了「导入说明」（数据早在�
   // 所以它不该新增任何后端面 —— 这一条钉住"零后端"这个说法不被后来的改动推翻。
   assert.ok(source.includes('function importNotes'), '判定规则要是纯函数（那才是可测的一半）')
   assert.ok(!source.includes('/import-notes'), '不许为它新增后端路由')
+})
+
+test('状态文件损坏的提示：说清"哪一份、影响什么、坏文件没删"（P2-2 的读者侧那半）', async () => {
+  // 宿主把 `/health.quarantined` 报上来（`listQuarantined` 直接读磁盘 ⇒ 重启后仍然说得出事），
+  // 客户端这一侧只负责把它说成人话。**说人话**是这条的全部要点：只说"有文件损坏"
+  // 等于没说 —— 读者要知道的是"我那本书的进度为什么显示成没读过"。
+  const { quarantineNoticeText } = await internals()
+
+  assert.equal(quarantineNoticeText([]), null, '没事就别出提示')
+  assert.equal(quarantineNoticeText(null), null, '拿不到数据时也别出提示')
+  assert.equal(quarantineNoticeText(undefined), null)
+
+  const text = quarantineNoticeText([{ base: 'bindings.json', file: 'bindings.json.corrupt-2026-10-02T10-00-00-000Z' }])
+  assert.ok(typeof text === 'string' && text.length > 0, '有损坏必须给一句话')
+  assert.ok(text.includes('bindings.json.corrupt-2026-10-02T10-00-00-000Z'), '要说清是哪一份（读者得能找到它）')
+  assert.ok(text.includes('绑定与阅读进度'), '要说清影响的是什么 —— "进度没了"才是读者真正在问的事')
+  assert.ok(text.includes('没删'), '坏文件是挪开不是删掉，这句必须说（否则读者以为丢了）')
+
+  // 分类 / 设置这两份也要各自说得出人话；认不出来的文件名不能把提示整条拖没。
+  assert.ok(quarantineNoticeText([{ base: 'categories.json', file: 'categories.json.corrupt-x' }]).includes('书架分类'))
+  assert.ok(quarantineNoticeText([{ base: 'settings.json', file: 'settings.json.corrupt-x' }]).includes('插件设置'))
+  assert.ok(quarantineNoticeText([{ base: '未知的东西.json', file: '未知的东西.json.corrupt-x' }]).includes('未知'))
+
+  // ⚠️ **举例不许说假话**（2026-10-02 批 3：把提示原文打印出来才看见的假声明）：
+  //    只坏了分类那份时，提示仍然说"绑定与阅读进度会显示成没读过"—— 读者会去查错的东西。
+  const onlyCategory = quarantineNoticeText([{ base: 'categories.json', file: 'categories.json.corrupt-x' }])
+  assert.doesNotMatch(
+    onlyCategory,
+    /阅读进度/,
+    '⚠️ 没坏 bindings 就不许说"阅读进度会显示成没读过"（假声明比不说更坏）',
+  )
+  assert.ok(onlyCategory.includes('不会自己恢复'), '不给例子也要如实说"重置过、不会自己恢复"')
+
+  const both = quarantineNoticeText([
+    { base: 'bindings.json', file: 'bindings.json.corrupt-a' },
+    { base: 'categories.json', file: 'categories.json.corrupt-b' },
+  ])
+  assert.ok(both.includes('bindings.json.corrupt-a') && both.includes('categories.json.corrupt-b'), '多份要都列出来')
+})
+
+test('接线守卫：书架真的把 `/health.quarantined` 显示出来了（组件写了没挂 = 等于没写）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // 冒烟渲染用的 hook 替身只取初始值、不执行异步回调，所以"数据回来之后画出来"
+  // 那一支在冒烟里跑不到 —— 而这里怕的失效模式正是"数据接住了但没画"。
+  const marker = source.indexOf('quarantineNoticeText(health')
+  assert.ok(marker > 0, '⚠️ ShelfView 必须把 health 里那串坏文件交给 quarantineNoticeText（接线断了就退化成零提示）')
+
+  // 而且必须**画在书列表那一支之外**：进度丢光的读者书架往往是满的，
+  // 只画在"空书架"那一支里等于看不见（这正是 `recovered` 那句的老毛病）。
+  assert.ok(
+    source.includes("quarantineText === null ? null : h('div', { className: 'drc-error' }, quarantineText)"),
+    '⚠️ 提示要真的挂进书架渲染树',
+  )
+  const listAt = source.indexOf('// --- 书列表（按分类分组')
+  const noticeAt = source.indexOf("quarantineText === null ? null : h('div'")
+  assert.ok(noticeAt > 0 && listAt > noticeAt, '它必须排在书列表**之上**（不管书架空不空都看得到）')
 })
 
 test('收件箱路径：以宿主答复为唯一权威，配置改了要跟着变', async () => {

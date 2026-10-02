@@ -226,6 +226,36 @@ test('真实 cordis：插件能在真宿主服务上装配，且三个 inject �
       agent: { id: 'session-other', session: { id: 'session-other' } },
     })
     assert.equal(webElsewhere, undefined, '联网闸只该管陪读会话，不该锁死用户其它会话')
+
+    // ---- P3-5：默认档下**不许白读** background.md ----
+    //
+    // 书名与人物名只在 `block-book` 的启发式里用，而默认档 `block-all` 在拿到它们
+    // **之前**就 return 了。可调用方从前是**无条件**先读完的（读 + 解析整份
+    // background.md，无缓存）—— 而这条守卫回调是**每次工具调用**都跑的。
+    // 这里在**真宿主**上数一数它到底读了几次：数据接上了没有、接在哪一层，
+    // 纯函数单测看不见（它只能证明"用到了才取"），只有这里能证明"没用到时真的没取"。
+    const hotLibrary = mounted.service.library
+    const realBackground = hotLibrary.background
+    let backgroundReads = 0
+    hotLibrary.background = (...args) => {
+      backgroundReads += 1
+      return realBackground.apply(hotLibrary, args)
+    }
+    try {
+      const hotPathBlocked = mounted.ctx.tools.guardReason({
+        name: 'web_search',
+        arguments: { query: '随便什么' },
+        agent: { id: 'session-bound', session: { id: 'session-bound' } },
+      })
+      assert.ok(typeof hotPathBlocked === 'string', '前提：默认档下这次联网确实被拦')
+      assert.equal(
+        backgroundReads,
+        0,
+        '⚠️ block-all 用不到书名/人物名，却白读了一次 background.md（每次工具调用都跑的热路径 + 同步 fs 读）',
+      )
+    } finally {
+      hotLibrary.background = realBackground
+    }
   } finally {
     await ctx.stop?.()
     rmSync(dir, { recursive: true, force: true })

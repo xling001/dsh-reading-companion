@@ -10,7 +10,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -299,6 +299,52 @@ test('书库：绑定与反查，且一个会话不能同时绑两本书', () =>
   }
 })
 
+test('绑定：`session-` 前缀两种写法必须算同一场会话（#13 收敛后仍逐条成立）', () => {
+  // ⚠️ 这是"手写 5 遍判据"里最容易漏的那条：一个带前缀、一个不带，仓库里两种写法
+  //    都真实存在（agent 侧裸 UUID、日志/标题服务带 `session-`）。漏掉的后果不是
+  //    "查不到"，而是**同一场对话被当成两场** ⇒ 一个会话绑到两本书上，而
+  //    `bookForSession` 正是投喂边界 / 路径闸 / 联网闸共用的那个入口。
+  const f = makeFixture()
+  try {
+    const a = f.library.importBook({ absPath: f.sourcePath }).book
+    const otherPath = join(f.storageDir, '..', '另一本.txt')
+    writeFileSync(otherPath, Buffer.from(sampleBook().replace(/雪|夜|归/g, '风'), 'utf8'))
+    const b = f.library.importBook({ absPath: otherPath }).book
+
+    // ① 用带前缀的写法绑，用不带前缀的写法反查（以及反过来）。
+    f.library.bind(a.bookId, 'session-abc')
+    assert.equal(f.library.bookForSession('abc'), a.bookId, '反查要认另一种写法')
+    assert.equal(f.library.bookForSession('session-abc'), a.bookId)
+    assert.equal(f.library.bookForSession('  session-abc  '), a.bookId, '空白也要容忍（日志里就长这样）')
+
+    // ② 判重也必须按"归一化后的会话"：换一种写法绑另一本书要拦下来。
+    assert.throws(
+      () => f.library.bind(b.bookId, 'abc'),
+      /SESSION_ALREADY_BOUND/,
+      '一个会话只许绑一本书 —— 换写法不算换会话',
+    )
+
+    // ③ 老文件里存的是带前缀那种键（3.0.4 之前的写法），
+    //    这里直接把它写进 bindings.json，验证解绑能把**同形的所有键**一起清掉。
+    const bindingsPath = join(f.storageDir, 'bindings.json')
+    const legacy = JSON.parse(readFileSync(bindingsPath, 'utf8'))
+    const legacyBookId = b.bookId
+    legacy.books[legacyBookId] = { ...(legacy.books[legacyBookId] ?? {}), sessionId: 'session-abc', boundAt: 't' }
+    legacy.bySession['session-abc'] = legacyBookId
+    writeFileSync(bindingsPath, JSON.stringify(legacy), 'utf8')
+
+    // 反查：两种写法**都先精确命中**（老键与新键同时存在时，各自认自己那一个）——
+    // 这是"先精确、再归一化兜底"的既有口径，收敛后必须一字不差。
+    assert.equal(f.library.bookForSession('abc'), a.bookId, '裸写法精确命中 a 那本')
+    assert.equal(f.library.bookForSession('session-abc'), legacyBookId, '带前缀写法精确命中老键那本')
+    assert.equal(f.library.unbind(legacyBookId), true)
+    assert.equal(f.library.bookForSession('abc'), undefined, '解绑要清掉同形的所有键（老键不能留下）')
+    assert.equal(f.library.bookForSession('session-abc'), undefined)
+  } finally {
+    f.cleanup()
+  }
+})
+
 test('书库：移除书籍会清掉目录与绑定，且可保留笔记副本', () => {
   const f = makeFixture()
   try {
@@ -316,6 +362,53 @@ test('书库：移除书籍会清掉目录与绑定，且可保留笔记副本',
     assert.equal(f.library.bookForSession('session-x'), undefined, '绑定必须一起清掉')
     assert.equal(f.library.remove(book.bookId).removed, false, '重复移除返回 false')
   } finally {
+    f.cleanup()
+  }
+})
+
+test('移除书籍：索引没落定之前不许删内容（回归：旧顺序先 rmSync 再 CAS 写索引）', (t) => {
+  // ⚠️ 2026-10-02 三方评审 P3-1：`remove()` 原来**先 `rmSync` 再 `writeLibrary`（CAS）**。
+  // 撞上 `REVISION_CONFLICT`（两个窗口同时删同一本）或任何写盘失败时，**内容已经删了、
+  // 索引里那本书还在** —— 读者看到一本打不开的书，而正文与笔记都已不在磁盘上，
+  // 这是"删除"这条路上唯一的不可逆损失。
+  //
+  // 用"让索引写不进去"来暴露顺序：两种平台靠不同机制挡（POSIX 看目录权限，
+  // Windows 看只读属性）。若本环境两种都挡不住（例如以 root 跑），跳过而不是误报。
+  const f = makeFixture()
+  const libraryFile = join(f.storageDir, 'library.json')
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    const dir = f.library.paths.bookDir(book.bookId)
+    assert.ok(existsSync(dir), '前置：书的目录存在')
+
+    chmodSync(libraryFile, 0o444)
+    chmodSync(f.storageDir, 0o555)
+
+    let failed = false
+    try {
+      f.library.remove(book.bookId)
+    } catch {
+      failed = true
+    } finally {
+      chmodSync(f.storageDir, 0o777)
+      chmodSync(libraryFile, 0o666)
+    }
+
+    if (failed === false) {
+      t.skip('本环境没能让索引写盘失败（权限被忽略），顺序问题无法在此暴露')
+      return
+    }
+    assert.ok(existsSync(dir), '索引写失败时，书的内容必须原封不动（顺序不能反过来）')
+    assert.equal(f.library.list().books.length, 1, '索引没写成，书架上也还得有它')
+    // 放开写权限后应当能正常移除 —— 修完顺序不该把"能删"这条正常路径弄坏。
+    assert.equal(f.library.remove(book.bookId).removed, true)
+  } finally {
+    try {
+      chmodSync(f.storageDir, 0o777)
+      chmodSync(libraryFile, 0o666)
+    } catch {
+      /* 目录/文件可能已经不存在，忽略 */
+    }
     f.cleanup()
   }
 })
@@ -984,6 +1077,47 @@ test('书库：exportBook 把笔记与背景导成"书名-…"，并且幂等', 
     assert.equal(second.notes.appended, 0)
   } finally {
     rmSync(out, { recursive: true, force: true })
+    f.cleanup()
+  }
+})
+
+test('状态文件损坏：`list()` 要如实报出被挪走的坏文件（读者侧那句"进度怎么没了"的解释）', () => {
+  // ⚠️ 2026-10-02 三方评审 P2-2：`mutateJson` 早就算出 `quarantinedTo` 了，却**零消费者** ——
+  //    绑定 / 分类 / 设置三份文件损坏时，读者侧零提示（只有书架索引那条路会说）。
+  //    后果不是"少一句话"：全部书的阅读进度在界面上变成"没读过"，紧接着一次翻页
+  //    （自动且高频）就把这份空状态写实了。坏文件确实一份都没丢，但没有人告诉读者它存在。
+  const f = makeFixture()
+  try {
+    const bookId = f.library.importBook({ absPath: f.sourcePath, title: '夜行' }).book.bookId
+    f.library.setProgress(bookId, { chapterIndex: 1, charOffset: 5 })
+
+    // 断电 / 手改 / 外部工具把它写坏（这里模拟：直接覆盖成非法 JSON）。
+    writeFileSync(join(f.storageDir, 'bindings.json'), '{ 坏掉的绑定表', 'utf8')
+
+    // 读者继续读：这一步会挪走坏文件并重建。
+    f.library.setProgress(bookId, { chapterIndex: 2, charOffset: 0 })
+
+    const listed = f.library.list()
+    assert.equal(
+      Array.isArray(listed.quarantined) && listed.quarantined.length,
+      1,
+      '⚠️ 挪走了坏文件却不说 —— 读者只会看到"我的进度没了"',
+    )
+    assert.equal(listed.quarantined[0].base, 'bindings.json', '要认出是哪一份（界面靠它说人话）')
+    assert.ok(
+      existsSync(listed.quarantined[0].path),
+      '坏文件必须**留在盘上**（挪开 ≠ 删掉），提示里那句"没删"才是真的',
+    )
+
+    // 没出事时必须是空的：天天报警的提示等于没有提示。
+    const clean = makeFixture()
+    try {
+      clean.library.importBook({ absPath: clean.sourcePath, title: '夜行' })
+      assert.deepEqual(clean.library.list().quarantined, [], '没出事时不许报')
+    } finally {
+      clean.cleanup()
+    }
+  } finally {
     f.cleanup()
   }
 })

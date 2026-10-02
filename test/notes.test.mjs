@@ -11,7 +11,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -782,6 +782,40 @@ test('书库：notesPage 与 notes 并存——前者分页，后者仍是全部
     assert.equal(page.notes[0].excerpt, '摘抄 2')
 
     assert.throws(() => f.library.notesPage('0123456789abcdef'), /BOOK_NOT_FOUND/)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('彻底删除：备份名撞名时必须另起一个，绝不覆盖上一代（回归：同一秒第二次删除）', () => {
+  // ⚠️ 2026-10-02 三方评审 P1-4（B 发现，主评审把档位从 P2 提到 P1）：
+  // 备份名的时间戳**只到秒**，而这里没有任何撞名检查 ⇒ 同一秒内的第二次「彻底删除」
+  // 会让 `atomicWriteText` 直接**覆盖**上一代备份。
+  //
+  // 背景备份那一侧早就有撞名循环（`backupBackground` 的 `-2` / `-3`），笔记这一侧没有
+  // —— 同一件事两份实现，改了一处漏了另一处。这是本轮唯一**不可逆丢读者文本**的路径：
+  // 上一代备份里装的正是"删掉之前那份更全的笔记"。
+  //
+  // 守卫直接钉承诺：**已存在的备份文件不许被改动**。用当前这一秒的名字提前占位，
+  // 复现的正是"同秒第二次删除"。
+  const f = makeLibraryFixture()
+  try {
+    const bookId = f.book.bookId
+    const note = f.library.writeNote(bookId, { excerpt: '要删掉的摘抄', thought: 'x', chapterIndex: 0 })
+    f.library.trashNote(bookId, note.id)
+
+    const notesPath = f.library.paths.notes(bookId)
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+    const occupied = `${notesPath}.bak.${stamp}.md`
+    writeFileSync(occupied, '上一代：绝不能被覆盖\n', 'utf8')
+
+    const result = f.library.purgeNotes(bookId, [note.id])
+
+    assert.equal(result.removed, 1)
+    assert.notEqual(result.backupPath, occupied, '撞名时必须另起一个文件名')
+    assert.equal(readFileSync(occupied, 'utf8'), '上一代：绝不能被覆盖\n', '已存在的备份被覆盖了')
+    assert.ok(existsSync(result.backupPath), '新的一代要真的落盘')
+    assert.ok(readFileSync(result.backupPath, 'utf8').includes('要删掉的摘抄'), '新备份应当是删除前的内容')
   } finally {
     f.cleanup()
   }

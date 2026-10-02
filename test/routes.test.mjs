@@ -63,7 +63,7 @@ async function startServer(dir, options = {}) {
      * 📌 顺带记一笔：本文件这份 ctx 与 `helpers/server.mjs` 那份是**同一段东西
      * 写了两遍**，而这一份正是那个文件顶部警告过的形态（`systemPrompt.section`
      * 写成 `() => () => {}`，把回调丢掉）。两处都在时，宿主契约一改就要改两遍，
-     * 漏一处就是一组假绿——这与 §215 的 M4 是同一个形状。
+     * 漏一处就是一组假绿——这与 docs/design-v1-archive.md §215 的 M4 是同一个形状。
      */
     on: () => () => {},
     provide: (name, value) => {
@@ -134,6 +134,11 @@ test('HTTP：/health 报告版本与书库路径，并发布 readingCompanion �
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
     assert.equal(body.version, pkg.version, '/health 的版本必须与 package.json 一致')
     assert.equal(body.storageDir, dir)
+
+    // ⚠️ P2-2 的接线端：`mutateJson` 早就算出 `quarantinedTo` 了，却**零消费者** ——
+    //    绑定 / 分类 / 设置损坏时读者侧零提示。这条钉住"宿主真的把它端出来了"：
+    //    `/health` 本来就被书架页拉（`ShelfView.reload`），所以读者侧不必新增请求。
+    assert.deepEqual(body.quarantined, [], '没出事时是个空清单（不是 undefined —— 客户端要能直接读）')
 
     assert.ok(s.services.readingCompanion, '必须发布 readingCompanion 供 P2 复用')
     assert.equal(typeof s.services.readingCompanion.library.importBook, 'function')

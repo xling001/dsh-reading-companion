@@ -379,4 +379,48 @@ test('移除：`keepNotes` 保留的是**活的那一份**（落在工作区时�
   }
 })
 
+test('迁移：换落点（工作区 A → 工作区 B）时真笔记必须跟过去，不许只补一份空骨架', () => {
+  // ⚠️ 2026-10-02 三方评审 P2-1（触发概率最高的几条之一：换会话 = 一次点击）：
+  // 迁移源**只有插件目录**，而插件目录里那份 `notes.md` 是**导入时写下的空骨架**
+  // （`library.js` 的导入段）。于是从 W1 换到 W2 时，W2 拿到的是一份空文件，
+  // 而 `migrated` / 界面提示照样报「已把 notes.md 复制过来，原文件保留」——
+  // 报的是迁移成功，搬过来的却是空骨架。W1 的笔记成为孤儿：
+  // 笔记页、本章笔记数、导出、注入 prompt 全部读到空的那份。
+  //
+  // 这条守卫钉两件事：① 真内容必须跟过去；② 报告必须如实（骨架不算"已复制过来"）。
+  const f = makeFixture({ title: '换落点' })
+  try {
+    const bookId = f.book.bookId
+
+    // 落在 W1，写一条真笔记。
+    f.library.setCompanionDir(bookId, f.workspaceDir)
+    f.library.writeNote(bookId, { excerpt: 'W1 写的摘抄', thought: '在第一个工作区', chapterIndex: 0 })
+    const w1 = f.library.location(bookId).dir
+    assert.ok(readFileSync(join(w1, 'notes.md'), 'utf8').includes('W1 写的摘抄'), '前置：W1 里得有真笔记')
+
+    // 换到 W2。
+    const w2Root = join(f.root, 'ws-two')
+    mkdirSync(w2Root, { recursive: true })
+    // ⚠️ 报告是随**换落点这一次**的响应回给界面的（`PUT /location` → `location.migrated`，
+    //    `client.js` 用它拼那句「已把 … 复制过来」），所以要接住这个返回值 ——
+    //    后一次 `ensureCompanionDir` 只会看到"目标已经有内容"，报不出任何东西。
+    const switched = f.library.setCompanionDir(bookId, w2Root)
+    const w2 = f.library.location(bookId).dir
+    assert.notEqual(w2, w1, '前置：落点确实换了')
+
+    assert.ok(
+      readFileSync(join(w2, 'notes.md'), 'utf8').includes('W1 写的摘抄'),
+      '换落点后笔记必须跟过来（现在是给一份空骨架，读者以为笔记丢了）',
+    )
+    assert.deepEqual(switched.migrated, ['notes.md'], '应当如实报告迁移了 notes.md')
+    assert.deepEqual(f.library.ensureCompanionDir(bookId).migrated, [], '迁移过就不该反复报')
+
+    // 原文件保留（复制而非移动）——这是既有的承诺，换落点后同样成立。
+    assert.ok(existsSync(join(w1, 'notes.md')), '旧落点的文件必须保留')
+    assert.ok(readFileSync(join(w1, 'notes.md'), 'utf8').includes('W1 写的摘抄'), '旧落点内容不该被改动')
+  } finally {
+    f.cleanup()
+  }
+})
+
 //#endregion

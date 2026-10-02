@@ -532,10 +532,18 @@ test('分节作业：一节的失败**重试一次** —— "没睡醒"不该让
   const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
   assert.equal(result.ok, true, `重试一次应该救回来：${JSON.stringify(result.reason ?? '')}`)
   assert.equal(attemptsOnPerson, 2, '同一节恰好两次调用（不多烧）')
-  assert.deepEqual(
-    result.retriedSections,
-    [{ section: '人物', reason: 'EMPTY_OUTPUT', wastedMs: 0, ok: true }],
-    '重试要如实带上成绩（算出来 → 结果 → 路由 → 客户端，少一层就静默失效）',
+  assert.equal(result.retriedSections.length, 1, '重试记录要如实带出来（少一层就静默失效）')
+  const retried = result.retriedSections[0]
+  assert.equal(retried.section, '人物', '要说清是哪一节重试过')
+  assert.equal(retried.reason, 'EMPTY_OUTPUT', '要说清为什么重试（空输出 ≠ 部署故障）')
+  assert.equal(retried.ok, true, '重试的**成绩**也要带上（重试成没成，界面要说得出）')
+  // ⚠️ `wastedMs` 是**真实测得的**时长（`one.elapsedMs`），这里钉的是"是个非负毫秒数"：
+  //    这个假 startRun 空跑一次通常 0ms、偶尔 1ms，写死 0 等于让守卫按运气红
+  //    （2026-10-02 批 3 实测：同一份代码连跑 5 次红 2 次 —— 假红比不测更坏，
+  //    它教人忽略红色）。"耗时含重试那趟、且两趟相加"的口径另有专测（P3-4 那条）。
+  assert.ok(
+    Number.isFinite(retried.wastedMs) && retried.wastedMs >= 0,
+    `wastedMs 必须是个非负毫秒数，实际 ${JSON.stringify(retried.wastedMs)}`,
   )
 })
 
@@ -669,6 +677,43 @@ test('机制：超时必须靠 race 兜住，不能只 abort —— 否则会永
   assert.equal(result.ok, false)
   assert.equal(result.reason, 'TIMEOUT')
   assert.ok(elapsed < 5000, `应当很快返回，实际用了 ${elapsed}ms`)
+})
+
+test('机制：不注入 startRun 时，超时也必须释放子代理（回归：默认实现的 dispose 挂在永不 settle 的 result 上）', async () => {
+  // ⚠️ 2026-10-02 三方评审 P2-3：这条守卫**刻意不注入 `startRun`**。
+  //
+  // 上面那条超时用例（以及 `memory.test.mjs` 里的同类）都注入了自己的
+  // `startRun`，而 `run.dispose()` 只存在于**默认实现**里 —— 注入恰好把唯一
+  // 持有 dispose 的那段代码整个换掉了。于是"超时后有没有释放子代理"从来没被
+  // 跑过。真正的泄漏点是：默认实现把 dispose 写在 `await run.result` 的
+  // `finally` 里，而超时是从 `Promise.race` 提前返回的 —— `result` 永不 settle
+  // ⇒ `finally` 永不执行 ⇒ 每次补齐失败都漏一个会话。
+  let disposed = 0
+  let started = 0
+  const runner = createSubagentRunner({
+    timeoutMs: 40,
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => ({
+      start: async () => {
+        started += 1
+        return {
+          // 宿主卡在一个不响应取消的等待上（与上一条同一个前提）。
+          result: new Promise(() => {}),
+          dispose: async () => { disposed += 1 },
+        }
+      },
+    }),
+    logger: {},
+  })
+
+  const result = await runner({ sessionId: 's1', label: 'x', prompt: 'p', persona: 'persona' })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'TIMEOUT')
+  assert.equal(started, 1, '应当真的走了默认启动实现')
+
+  // 释放可能排在本轮 microtask 之后，给它一拍。
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(disposed, 1, '超时后必须释放子代理，且只释放一次')
 })
 
 test('机制：没有活 Agent 时报可预期的状态，而不是错误', async () => {

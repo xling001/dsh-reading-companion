@@ -209,7 +209,7 @@ test('宿主半边：客户端半边真的依赖谁，就在 dsh.client.inject �
   // 客户端插件的加载顺序由 profile 的 `dsh.profile.bundles` 与各插件自己的
   // `inject` 决定 —— 本仓库真出过这个事故：读者装了新插件之后，我们排在宿主
   // ui-sidebar-right 之后才装配，`ctx.get('sessions')` 拿到 undefined，书架那行
-  // 的「跳过去」**永久**退化成不可点静态标（v1.68 §392–395）。惰性取用能让功能
+  // 的「跳过去」**永久**退化成不可点静态标（v1.68 docs/design-v1-archive.md §392–395）。惰性取用能让功能
   // 不消失，但**声明**才是"让宿主知道我们依赖谁、按序装配"的那一半。
   const REQUIRED = [
     ['ctx.slots', '@deepseek-ai/dsh-client-ui-slots'],

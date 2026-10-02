@@ -14,7 +14,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -150,7 +150,9 @@ test('契约：联网档位的三档在宿主与客户端逐字一致、顺序�
  * 丢掉（连带标题里的章号区间），而 627 条行为断言全绿放行——因为它们只断到
  * `## 时间与分线` 这一层。
  *
- * 所以这里钉的不是行为，是**接线形状**（design.md 的第三类守卫）：想知道某节是不是
+ * 所以这里钉的不是行为，是**接线形状**（`docs/design.md`「测试」小节里的第三类守卫
+ * —— 那句原文写的是"第三类"，这里从前写成了"design.md 的第三类守卫"，而设计稿里
+ * 从没有过这个小节名；2026-10-02 批 5 把指路改成可核对的那一节）：想知道某节是不是
  * 分组的，一律走 `isGroupedSection()`。行为那一半由 `background.test.mjs` 的
  * 读者族往返断言看着。
  */
@@ -184,5 +186,45 @@ test('接线：分组判定只有一处定义（host 侧不许再写裸的 BACKG
     [],
     `分组判定必须只走 isGroupedSection()，这些地方又写回了裸常量（漏一族 = 读者族的 `
       + `\`###\` 每次写盘被静默丢掉）：\n${offenders.join('\n')}`,
+  )
+})
+
+test('接线：封存件的条目号必须带文件名（裸 §N 等于没指路）', () => {
+  // `docs/design-v1-archive.md` 里的条目号（比如那里的 §204、§105）就是这种编号。
+  // 不写文件名，读者拿这个号去 `design.md` 里找是找不到的 —— 而 2026-10-02 之前
+  // `lib/` 里有 29 处这样的裸引用（代码健康度评审 #26 的一半：补文件名）。
+  //
+  // 这条守卫扫源码（本文件同一族），不看行为：它是**注释里的可发现性**，
+  // 行为断言看不见。带小节的 `§5.4` 不算（那是另一套编号），已经指过路的也不管。
+  const targets = []
+  const collect = (dir) => {
+    for (const name of readdirSync(dir)) {
+      if (name === 'node_modules' || name === '.tmp') continue
+      const full = join(dir, name)
+      if (statSync(full).isDirectory()) collect(full)
+      else if (/\.(js|mjs)$/.test(name)) targets.push(full)
+    }
+  }
+  collect(join(ROOT, 'lib'))
+  collect(join(ROOT, 'test'))
+  assert.ok(targets.length >= 40, `只扫到 ${targets.length} 个源文件，扫描逻辑可疑`)
+
+  const offenders = []
+  for (const file of targets) {
+    const source = readFileSync(file, 'utf8')
+    const rel = file.slice(ROOT.length + 1).replace(/\\/g, '/')
+    const re = /§(\d+)(?![\d.])/g
+    let match
+    while ((match = re.exec(source)) !== null) {
+      const before = source.slice(Math.max(0, match.index - 60), match.index)
+      if (/archive|design-history|design\.md/.test(before)) continue
+      offenders.push(`${rel}:${source.slice(0, match.index).split('\n').length}: §${match[1]}`)
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些引用没写文件名，读者按号找不到（应写成 \`docs/design-v1-archive.md §N\`）：\n${offenders.join('\n')}`,
   )
 })

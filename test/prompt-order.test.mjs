@@ -112,16 +112,63 @@ test('缓存顺序：动态值一个都不能留在稳定前缀里', () => {
   assert.match(dynamic, /已读内容/)
 })
 
-test('缓存顺序：分界点必须真的落在「## 当前情况」上', () => {
+test('缓存顺序：分界点必须真的落在**动态区第一节**上', () => {
   // 这条是给 measureCacheSplit 自己用的：它是按字符串找分界线的，一旦渲染
   // 顺序变了而它没跟着改，它就会悄悄报出一个偏大的稳定前缀——而所有依赖
   // 它的断言都会跟着变松。所以这里把两者的定义钉在一起。
+  //
+  // ⚠️ 2026-10-02 批 4（P3-4）重排后，动态区的**第一节**是「## 已读内容」，
+  //    分界线跟着挪到它上面。上面那条"动态值不能留在稳定前缀里"的用例会
+  //    咬住它：分界线若忘了改，正文就会被算进稳定前缀，那条立刻变红。
   const text = section()
   const split = measureCacheSplit(text)
-  assert.equal(text.slice(split.stable, split.stable + '## 当前情况'.length), '## 当前情况')
+  assert.equal(text.slice(split.stable, split.stable + '## 已读内容'.length), '## 已读内容')
   assert.equal(split.stable + split.dynamic, split.total)
   assert.equal(split.total, text.length)
 })
+
+//#region 缓存经济学（P3-4 重排的理由，值得单独钉）
+
+test('缓存经济学：多存一条笔记**不许**作废「已读内容」（P3-4）', () => {
+  // 代价完全不对称：prompt 缓存是**前缀匹配**，动态区里谁排在前面，谁一变就
+  // 把后面全部作废。读者"发去会话 / 抓取回应"每写一条讨论就动一次讨论节 ——
+  // 而它是动态区里**变化最频繁**的那一样（一次阅读里可能聊好几回），
+  // 「已读内容」则是**最大且只按章变**的那一块。所以讨论必须排最后。
+  const before = section({ discussions: [] })
+  const after = section({
+    discussions: [{ at: '2026-03-07T00:00:00Z', kind: 'note', chapterIndex: 15, thought: '结尾写得好' }],
+  })
+
+  const talkAt = after.indexOf('## 你们之前聊过')
+  const bodyAt = after.indexOf('## 已读内容')
+  assert.ok(talkAt > 0 && bodyAt > 0, '前提：两节都渲染出来了')
+  assert.ok(talkAt > bodyAt, '⚠️ 讨论时间线必须排在**已读内容之后**（变化最频繁的排最后）')
+
+  // 新排法下 `before` 应当是 `after` 的**前缀**：多一条讨论只往后追加，
+  // 前面那些字节一个都不动。旧排法（讨论夹在正文前面）在这里必红。
+  assert.equal(
+    commonPrefixLength(before, after),
+    before.length,
+    '⚠️ 存一条笔记把「已读内容」整块作废了 —— 此后每次请求都要重算整章正文',
+  )
+})
+
+test('缓存经济学：跨天（只有日期变）**不许**作废「已读内容」（P3-4）', () => {
+  const dayA = section({ now: '2026-03-05T09:00:00.000Z' })
+  const dayB = section({ now: '2026-03-06T09:00:00.000Z' })
+
+  const bodyAt = dayA.indexOf('## 已读内容')
+  const situationAt = dayA.indexOf('## 当前情况')
+  assert.ok(bodyAt > 0 && situationAt > 0, '前提：两节都在')
+  // 「当前情况」每章变**且**每天变（进度 + 日期）；「已读内容」只按章变。
+  assert.ok(bodyAt < situationAt, '⚠️ 已读内容要排在当前情况**之前**（跨天时正文不该跟着作废）')
+  assert.ok(
+    commonPrefixLength(dayA, dayB) >= situationAt,
+    `只换了日期，却把「已读内容」也作废了（公共前缀 ${commonPrefixLength(dayA, dayB)} < 当前情况起点 ${situationAt}）`,
+  )
+})
+
+//#endregion
 
 test('describeWindow：把缓存分界暴露给面板（用户要能自己判断有没有用）', () => {
   const text = section()

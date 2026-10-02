@@ -23,6 +23,8 @@ import assert from 'node:assert/strict'
 import {
   BACKGROUND_INJECTED_SECTIONS,
   BACKGROUND_SECTION_WEIGHTS,
+  BRACKET_PAIRS,
+  allocateSections,
   mergeBackground,
   parseBackground,
   renderBackground,
@@ -129,33 +131,49 @@ function measureDoc(perSection = 20) {
   ].join('\n'))
 }
 
-test('分区：权重真的被执行（不是死代码）', () => {
-  const doc = measureDoc()
-
-  // ★ 差分断言：同一份内容、同一份预算，**只换权重表**，分配结果必须不同。
+test('分区：权重真的被执行（不是死代码），且生产函数上没有"只有测试会用"的接缝', () => {
+  // ★ 差分断言：同一批分区、同一份预算，**只换权重表**，分配结果必须不同。
   //
   // 这是唯一能证明"权重表被读过"的写法。历史上它被写过两次死代码：第一次是
   // 注释说按权重、实现用均分；第二次是"按权重给保底"但被统一的比例封顶，
   // 于是每节保底一模一样。两次都全绿，因为没有任何断言在**比较**两种权重。
   //
-  // 断言打在 `allowances`（分配结果）而不是渲染出的字符数上：后者按整条取舍，
-  // 量化噪声会把权重差异吃掉。
-  const base = { budgetChars: 900, progressIndex: 24 }
-  const normal = renderBackgroundForPrompt(doc, base).allowances
-
+  // ⚠️ 2026-10-02 批 4（#16）：这条断言从前靠 `renderBackgroundForPrompt` 上的
+  //    `options.weights` 来写，而那是个**自认的测试接缝**（docblock 原文：
+  //    "这是给测试留的接缝"）—— 测试的需要不该改生产函数的形状，多出来的参数在
+  //    生产里没有任何调用方，却成了"谁都能塞一套权重进来"的口子。
+  //    分配逻辑现在是纯函数 `allocateSections`，测试直接打它。
+  const sections = [
+    { name: '人物关系', wanted: 400 },
+    { name: '通用概念', wanted: 400 },
+  ]
+  const normal = allocateSections(sections, 600, 900)
   // 把权重整个倒过来：「通用概念」变成最重的那一节。
-  const flipped = renderBackgroundForPrompt(doc, {
-    ...base,
-    weights: { 人物关系: 0.12, 人物: 0.12, 世界观: 0.12, '文风（只写一次）': 0.12, 通用概念: 0.52 },
-  }).allowances
+  const flipped = allocateSections(sections, 600, 900, { 人物关系: 0.12, 通用概念: 0.52 })
 
   assert.ok(
-    flipped['通用概念'] > normal['通用概念'],
-    `把「通用概念」的权重拉到 0.52 之后它必须变大：${flipped['通用概念']} vs ${normal['通用概念']}`,
+    flipped[1] > normal[1],
+    `把「通用概念」的权重拉到 0.52 之后它必须变大：${flipped[1]} vs ${normal[1]}`,
   )
   assert.ok(
-    flipped['人物关系'] < normal['人物关系'],
-    `相应的「人物关系」必须变小：${flipped['人物关系']} vs ${normal['人物关系']}`,
+    flipped[0] < normal[0],
+    `相应的「人物关系」必须变小：${flipped[0]} vs ${normal[0]}`,
+  )
+  // 保底那一趟与权重无关（两轮演进都栽在这上面）：两边都至少拿到 floor。
+  assert.ok(normal[0] > 0 && normal[1] > 0 && flipped[0] > 0 && flipped[1] > 0, '每节都要露头')
+
+  // ⚠️ 接缝不许长回来，而且**用行为断**（不查源码里的字符串：那段说明本身就要
+  //    提到这个名字）：给渲染函数塞一套权重，**必须一点效果都没有**。
+  const base = { budgetChars: 900, progressIndex: 24 }
+  const plain = renderBackgroundForPrompt(measureDoc(), base)
+  const withWeights = renderBackgroundForPrompt(measureDoc(), {
+    ...base,
+    weights: { 人物关系: 5, 通用概念: 5 },
+  })
+  assert.deepEqual(
+    withWeights.allowances,
+    plain.allowances,
+    '渲染函数上不许再出现"只有测试会用"的权重接缝（要换权重请直接打 allocateSections，#16）',
   )
 })
 
@@ -582,6 +600,36 @@ test('倒退过滤：段落式人物条目必须**按句**过滤（段落式带�
   assert.doesNotMatch(inlineOut.text, /出场（/, '尾部开括号残肢要清掉')
 })
 
+test('倒退过滤：切剩的括号残肢**一对都不能漏**（用例表从实现表派生，P3-3）', () => {
+  // ⚠️ 2026-10-02 三方评审 P3-3：`trimDanglingBrackets` 的清括号表少了一对 ——
+  //    作者自己的用例表里有 `[`、实现表里没有，于是 `甲遇见同伴[\`第50章\` 其实是…`
+  //    切出来是 `- \`第3章\` 甲遇见同伴[`（内容挡住了，尾部残肢没清）。
+  //
+  // 所以这条**不再手写分隔符清单**：直接从实现表 `BRACKET_PAIRS` 派生。
+  // 谁往实现表里加一对括号，这里自动跟着测 —— 反过来，"用例表里有、实现表里没有"
+  // 这种漏法就结构性地不可能再发生（这正是 P3-3 的形态：两份表各写一套）。
+  const pairs = Object.entries(BRACKET_PAIRS)
+  assert.ok(pairs.length >= 10, `实现表太小了（${pairs.length} 对），是不是被谁删过`)
+
+  for (const [open, close] of pairs) {
+    const doc = parseBackground([
+      '## 人物',
+      '### 甲',
+      `- \`第3章\` 甲遇见同伴${open}\`第50章\` 其实是幕后黑手${close}`,
+    ].join('\n'))
+    const out = renderBackgroundForPrompt(doc, { budgetChars: 9000, maxChapter: 20 })
+    const label = `括号对 ${open}${close}`
+    assert.match(out.text, /甲遇见同伴/, `${label}：已读的那半句必须留下`)
+    assert.doesNotMatch(out.text, /幕后黑手/, `${label}：未读的那半句不许进提示词`)
+    // 残肢检查：切点落在这对括号中间 ⇒ 尾巴上不许留着那个开括号。
+    // （"读起来是坏的"—— 这正是 trio 里 `trimDanglingBrackets` 存在的理由。）
+    assert.ok(
+      !out.text.replace(/\s+$/, '').endsWith(open),
+      `${label}：尾部留了没配对的 ${open}（残肢没清）`,
+    )
+  }
+})
+
 test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A，三轮演进的落点）', () => {
   // ⚠️ 这条函数被改过三次，形状值得记住（每一次都是"上一条修法留了个口子"）：
   //   1. **最初**：只在锚紧跟句读（。！？；"」）时才切 ⇒ `，` / 空格 / `：` 分隔的写法
@@ -657,7 +705,11 @@ test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A
 //#region 在线折叠（3.0 ②c）：离场人物折叠成锚（注入视图；文件不动）
 
 const OFFLINE_DOC = [
-  '<!-- drc-background: schema=1 covered=1..100 -->',
+  // ⚠️ `covered` 特意与进度**齐平**（读到第 90 章、记到第 90 章）：这一带用例测的是
+  //    **在线折叠**，而折叠与"倒退过滤"是两件正交的事。写 `1..100` 会让读者落到
+  //    水位线之前 ⇒ 「人物状态」整节不注入（2026-10-02 三方评审 P1-2 的拍板），
+  //    于是这些断言会因为"整节都没了"而**假绿**（历史上就有一条是这样绿的）。
+  '<!-- drc-background: schema=1 covered=1..90 -->',
   '# 《书》· 背景认识',
   '',
   '## 人物状态',
@@ -683,6 +735,7 @@ test('在线折叠：离场人物（最后提及距今 ≥ 阈值）⇒ 注入�
   assert.ok(!pessoa段.includes('渡口少年'), '更早的条目不随行（折叠成一条）')
   assert.match(r.text, /另有 1 位人物已\*\*离场\*\*/, '折叠要说出来（可解释）')
   const 状态段 = r.text.slice(r.text.indexOf('### 人物状态') + 1, r.text.indexOf('### 人物状态') + 400)
+  assert.ok(状态段.includes('在城中被围'), '⚠️ 状态段得**真在**，否则下面那条断言是假绿')
   assert.ok(!状态段.includes('离开渡口，去向不明'), '离场人物的状态行不注入（过期现状误导）')
   // 乙：90 − 90 = 0 < 60 ⇒ 正常展开
   assert.ok(r.text.includes('被围城中'), '在线人物的一切照旧')
@@ -690,7 +743,8 @@ test('在线折叠：离场人物（最后提及距今 ≥ 阈值）⇒ 注入�
 
 test('在线折叠：人物**再出场**（有新条目）⇒ 自动展开；文件视图（renderBackground）从头到尾不动', () => {
   const doc = parseBackground([
-    '<!-- drc-background: schema=1 covered=1..100 -->',
+    // 同 `OFFLINE_DOC`：水位线与进度齐平（读到第 97 章、记到第 97 章），不进入倒退过滤。
+    '<!-- drc-background: schema=1 covered=1..97 -->',
     '# 《书》· 背景认识',
     '',
     '## 人物状态',
@@ -714,5 +768,61 @@ test('在线折叠：设 0（或不给 progressIndex）⇒ 关闭；与旧行为
   const off = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 89, personOfflineChapters: 0 })
   assert.ok(off.text.includes('渡口少年'), '0 = 不折叠')
   assert.ok(!off.text.includes('已**离场**'), '折叠的说明也不该出现')
+})
+
+test('倒退过滤：判读与切分**同源** —— 漏打反引号的「第3章」也算锚（P3-2）', () => {
+  // ⚠️ 2026-10-02 三方评审 P3-2：两套口径不咬合 —— 切分的反引号**可选**
+  //    （`` /`?第\s*[\d\-–~]+\s*章`?/g ``），而 `minChapterIn` / `maxChapterIn` **要求**反引号。
+  //    于是"没打反引号"的条目：**切是切开了**，但每一片的 `earliest` 都是 0 ⇒ 被判成
+  //    "没带章号 = 通用描述" ⇒ 两条都留下（切开等于白切）。
+  //    实测（主评审与 A 各自复跑）：带反引号的挡住 ✓；去掉反引号的
+  //    「第3章 …，第50章 …」leaked=true、filtered=[] —— 同一句话，只差两个反引号。
+  //    读者真实 8 份背景文件里漏打 **0 条** ⇒ 属健壮性 / 治未病，不是当下活跃漏洞；
+  //    但它正是本仓库自己写过的"判据与投喂侧同源"没做到的那一处。
+  //    2026-10-02 读者拍板：**判读也接受无反引号**（"切了却不判"比不切更糟）。
+  const doc = parseBackground([
+    '## 人物',
+    '### 甲',
+    '- 第3章 甲遇见同伴，第50章 其实是幕后黑手。',
+  ].join('\n'))
+  const out = renderBackgroundForPrompt(doc, { budgetChars: 9000, maxChapter: 20 })
+  assert.match(out.text, /甲遇见同伴/, '已读的那半句要留下')
+  assert.doesNotMatch(out.text, /幕后黑手/, '没打反引号也必须被认出来（判读与切分同源）')
+
+  // 反向守卫：**没有章号**的条目照旧一律保留（"通用描述"这条路不许被误伤）。
+  const plain = parseBackground(['## 世界观', '- 通用设定：这个世界有灵气'].join('\n'))
+  const plainOut = renderBackgroundForPrompt(plain, { budgetChars: 9000, maxChapter: 20 })
+  assert.match(plainOut.text, /这个世界有灵气/, '只有"第N章"才是锚，普通描述不许被误伤')
+})
+
+test('倒退过滤：逐片过滤是**所有节共用**的前置步骤（回归：3.0.4 只对「分组 + 人物」生效）', () => {
+  // ⚠️ 2026-10-02 三方评审 P1-3（A 记 P2、主评审提到 P1）：3.0.4 的逐片过滤只落在
+  //    「分组 + `name === '人物'`」这一条路上 ⇒ 同一份文件里其余形态**照旧整块放行**：
+  //    只要条目里**有一个**早于上界的锚，整条（含 `第50章` 那半句）都进注入。
+  //    真实数据标定（主评审只读计数）：读者 8 份背景文件里 25 条带括号章号，其中
+  //    **6 条**"括号章号 > 本条行首章号" ⇒ 这个写法在真实产物里存在，不是想象；
+  //    而它由提示词自己允许（`memory.js` 的"顺带提到的写在括号里"）。
+  //
+  //    判据：**能不能被切开、该不该给**，不该由"这条属于哪一节"决定。
+  const cases = [
+    ['扁平「人物」（模型漏写 ###）', ['## 人物', '- `第3章` 甲遇见同伴，`第50章` 其实是幕后黑手']],
+    ['分组「人物关系」· 逗号分隔', ['## 人物关系', '### 甲↔乙', '- `第3章` 二人结拜，`第50章` 甲杀了乙']],
+    ['分组「人物关系」· 括号内后文事实', ['## 人物关系', '### 甲↔乙', '- `第3章` 初见（`第50章` 反目）']],
+    ['分组「世界观」· 括号内后文事实', ['## 世界观', '### 门派', '- `第3章` 这个门派（`第50章` 其实是幕后黑手）']],
+    ['分组「世界观」· 逗号分隔', ['## 世界观', '### 门派', '- `第3章` 式微，`第50章` 灭门']],
+  ]
+  for (const [label, lines] of cases) {
+    const out = renderBackgroundForPrompt(parseBackground(lines.join('\n')), {
+      budgetChars: 9000,
+      maxChapter: 20,
+    })
+    assert.doesNotMatch(out.text, /第50章/, `${label}：第 50 章那半句不许进提示词`)
+    assert.match(out.text, /第3章/, `${label}：已读的那半句要留下`)
+    assert.equal(
+      out.filtered.reduce((sum, item) => sum + (item.sentences ?? 0), 0),
+      1,
+      `${label}："截了就要说"——逐片丢掉的那片要报出来`,
+    )
+  }
 })
 

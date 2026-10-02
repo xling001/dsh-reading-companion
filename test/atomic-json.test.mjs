@@ -15,10 +15,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { atomicWriteJson, mutateJson, readJson, revisionOf, updateJson } from '../lib/host/atomic-json.js'
+import { atomicWriteJson, listQuarantined, mutateJson, readJson, revisionOf, updateJson } from '../lib/host/atomic-json.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 let seq = 0
@@ -119,6 +119,30 @@ test('mutateJson：损坏的文件被**挪到一边**（不删）后重建 —�
     assert.equal(readFileSync(result.quarantinedTo, 'utf8'), '{ 坏掉的绑定表', '坏内容必须**完整保留**在挪走的那份里')
     assert.deepEqual(Object.keys(result.value.books), ['第一本'], '新的一份照常建立')
     assert.equal(readdirSync(f.dir).filter((name) => name.includes('.corrupt-')).length, 1)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('listQuarantined：把"挪到一边的坏文件"列出来（读者侧那句提示的数据来源）', () => {
+  // ⚠️ 2026-10-02 三方评审 P2-2：`quarantinedTo` 早就返回了，全树却**零消费者** ——
+  //    绑定 / 分类 / 设置三份文件损坏时读者侧零提示（只有书架索引那条路会说），
+  //    于是"我的阅读进度怎么全没了"没有任何解释。这条函数是那条提示的数据源：
+  //    它从**磁盘**上读（不是内存里某次写入的残留）⇒ 重启后仍然说得出事。
+  const f = makeFile('{ 坏掉的绑定表')
+  try {
+    assert.deepEqual(listQuarantined(f.dir), [], '没出事时必须安静（否则会天天报警）')
+
+    mutateJson(f.path, {
+      fallback: { schemaVersion: 1, books: {} },
+      mutate: (current) => current,
+    })
+
+    const found = listQuarantined(f.dir)
+    assert.equal(found.length, 1, '挪走的那一份必须被列出来')
+    assert.equal(found[0].base, basename(f.path), '要能认出它原本是哪份文件（界面靠它说人话）')
+    assert.ok(found[0].file.includes('.corrupt-'), '给的是磁盘上那个真名')
+    assert.equal(readFileSync(found[0].path, 'utf8'), '{ 坏掉的绑定表', '内容仍然完整')
   } finally {
     f.cleanup()
   }

@@ -19,6 +19,7 @@ import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { call, importBook, makeDir, startServer } from './helpers/server.mjs'
+import { measureCacheSplit } from '../lib/host/spoiler.js'
 
 const SESSION = 'sess-inject-1'
 
@@ -191,9 +192,19 @@ test('注入：稳定前缀在真实回调上同样稳定（跨进度逐字节�
     await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 2, charOffset: 0 } })
     const at2 = inject(s.hooks, SESSION)
 
-    const marker = '## 当前情况'
+    // ⚠️ 分界线**不在这里手写**：它由 `measureCacheSplit` 定义（同源）。
+    //    2026-10-02 批 4 的动态区重排（P3-4）就是被这一行抓住的 —— 这里原先是
+    //    写死的 `'## 当前情况'`，重排后它落到**动态区内部**，于是这条断言开始
+    //    把一个"随进度变"的前缀当成稳定的（第一次红的就是它）。
+    //    以后分界线再挪，这里跟着走，不会再有人漏改一份拷贝。
+    const split1 = measureCacheSplit(at1)
+    const split2 = measureCacheSplit(at2)
     assert.notEqual(at1, at2, '进度变了，整段当然要变')
-    assert.equal(at1.slice(0, at1.indexOf(marker)), at2.slice(0, at2.indexOf(marker)), '但稳定前缀必须一模一样')
+    assert.equal(
+      at1.slice(0, split1.stable),
+      at2.slice(0, split2.stable),
+      '但稳定前缀必须一模一样',
+    )
   } finally {
     await s.close()
   }

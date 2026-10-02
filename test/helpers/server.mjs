@@ -117,7 +117,7 @@ export async function startServer(dir, options = {}) {
    * ⚠️ 与上面的 section / guard 同一个理由：背景更新那条路径的**唯一入口**就是
    * `session/event` 订阅。若把它写成 `() => () => {}` 丢掉，测试就只能打到纯函数，
    * 而"函数写对了但没接线"正是本仓库栽过三次的坑
-   * （§198 ③ → §203 ② → §215 的 M4）。
+   * （`docs/design-v1-archive.md` §198 ③ → §203 ② → §215 的 M4）。
    */
   const listeners = new Map()
   const ctx = {
