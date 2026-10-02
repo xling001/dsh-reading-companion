@@ -539,6 +539,45 @@ test('分节作业：一节的失败**重试一次** —— "没睡醒"不该让
   )
 })
 
+test('分节作业（并发）：各节的调用**同时开跑** —— wall-clock ≈ 最慢的一节，不是相加', async () => {
+  // 读者拍板（2026-10-02）：分节压缩并发跑。钉法：每次 startRun 记下开始时刻并拖 60ms
+  // ⇒ 若是串行，第二节的 start 必然晚于第一节的 end；并发的⇒ 两个 start 都早于任一 end。
+  const events = []
+  const compactor = createCompactor({
+    startRun: async (spec) => {
+      const section = String(spec.label).split(':').pop()
+      events.push({ kind: 'start', section, at: Date.now() })
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      events.push({ kind: 'end', section, at: Date.now() })
+      return { output: [{ type: 'text', text: `## ${section}\n### 甲\n- \`第1章\` 压缩后的条目。` }] }
+    },
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const before = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物关系',
+    '- 甲 ↔ 乙：对手（`第2章`）',
+    '- 甲 ↔ 乙：和解（`第5章`）',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明',
+    '- `第2章` 立场转变',
+  ].join('\n'))
+  const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before, targetChars: 200 })
+  assert.equal(result.ok, true, JSON.stringify(result.reason ?? ''))
+  const starts = events.filter((event) => event.kind === 'start')
+  const ends = events.filter((event) => event.kind === 'end')
+  assert.equal(starts.length, 2)
+  const firstEnd = Math.min(...ends.map((event) => event.at))
+  assert.ok(
+    starts.every((event) => event.at < firstEnd),
+    `两次调用应当同时开跑（${JSON.stringify(events)}）`,
+  )
+  assert.ok(result.savedChars > 0, '夹具的回执必须真的变小（否则差分没有意义）')
+})
+
 test('分节作业：模型在回执里**夹带别的节**⇒ 只取自己那节，其余照旧原样（包括读者族）', async () => {
   const before = parseBackground([
     '<!-- drc-background: schema=1 covered=1..10 -->',
