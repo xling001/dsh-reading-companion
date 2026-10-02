@@ -925,6 +925,11 @@ test('HTTP：状态码表 —— 「文件被改过」这类是 409，不是 400
   for (const code of ['REVISION_CONFLICT', 'BOOK_NOT_BOUND', 'WORKSPACE_NOT_RESOLVED', 'EXPORT_DIR_REQUIRED', 'SESSION_ALREADY_BOUND']) {
     assert.equal(host.statusForErrorCode(code), 409, `${code} 应当是 409（状态不允许，不是参数写错了）`)
   }
+  // 2026-10-03 A3：三条"文件来自更新版本的插件，我们不敢覆盖"也是同一族 ——
+  // 当前状态不允许写，不是请求写错了；用 400 会把人引到"我哪一步点错了"。
+  for (const code of ['BACKGROUND_SCHEMA_UNSUPPORTED', 'NOTES_SCHEMA_UNSUPPORTED', 'DRAFTS_SCHEMA_UNSUPPORTED']) {
+    assert.equal(host.statusForErrorCode(code), 409, `${code} 应当是 409（当前状态不允许写）`)
+  }
   // 另外两族各抽查：确认这张表没被"顺手扩大"。
   assert.equal(host.statusForErrorCode('BOOK_NOT_FOUND'), 404, '点名的东西不存在 → 404')
   assert.equal(host.statusForErrorCode('NOTE_EMPTY'), 400, '请求内容不对 → 400')

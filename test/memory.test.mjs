@@ -15,13 +15,16 @@ import assert from 'node:assert/strict'
 
 import {
   DEFAULT_TIMEOUT_MS,
+  MEMORY_CHAR_BUDGET,
+  MEMORY_ENTRY_BUDGET,
   MEMORY_PERSONA,
   buildMemoryPrompt,
   createMemoryFiller,
   extractText,
   looksTruncated,
+  memoryBudgetOverrun,
 } from '../lib/host/memory.js'
-import { FILL_INCREMENTAL_SECTIONS } from '../lib/host/background.js'
+import { FILL_INCREMENTAL_SECTIONS, parseBackground } from '../lib/host/background.js'
 
 test('补齐提示词：长度上限（人物关系 80 字、其余 40 字），且明写不重写', () => {
   const prompt = buildMemoryPrompt({
@@ -153,7 +156,7 @@ test('补齐提示词：两步式（v1.66），且**不**强制龙套进人物�
   )
 })
 
-test('补齐提示词：「文本类型」只在第一批判（之后按它写、不许重写）', () => {
+test('补齐提示词：「文本类型」第一批只写**形态**；之后按它写，且**可以申请重判**（2026-10-03 放宽）', () => {
   const base = {
     bookTitle: '书',
     samples: [{ index: 0, title: '一', text: '正文' }],
@@ -162,31 +165,72 @@ test('补齐提示词：「文本类型」只在第一批判（之后按它写�
   }
   const first = buildMemoryPrompt({ ...base, hasTextTypeSection: false })
   assert.match(first, /我\*\*还没判过\*\* ⇒ \*\*这一批请写在最前面\*\*/, '第一批要它判断文本类型')
-  // 内容要点（读者 2026-10-02 定的形状）：像写一句自己的**简介** —— 方向 + 谁的故事 + 一句侧重。
-  // 断言打在**要点**上、不钉整句（提示词会一轮轮被压短，见 lessons）。
-  assert.match(first, /简介/, '要它像写一句自己的简介')
-  assert.match(first, /什么方向/, '① 交代方向')
-  assert.match(first, /谁的故事/, '② 交代是谁的故事')
-  assert.match(first, /人称|视角/, '③ 人称与视角（读者 2026-10-02 追加要求）')
-  assert.match(first, /第二位主角/, '④ 有没有第二位主角（读者追加要求）')
-  assert.match(first, /方向/, '⑤ 各条目的大概方向')
+  // 内容要点（读者 2026-10-03 定的形状）：**只写形态** —— 类型 / 人称 / 写作方式 / 主角是谁；
+  // 剧情用省略号带过，**不对故事走向与内容下判断**（减少"误判剧情导向"带来的干扰）。
+  assert.match(first, /属于什么类型/, '① 类型（武侠？cp？男女频？）')
+  assert.match(first, /第几人称/, '② 人称与视角')
+  assert.match(first, /写作方式/, '③ 写作方式')
+  assert.match(first, /主角是谁/, '④ 主角是谁')
+  assert.match(first, /省略号/, '⑤ 剧情只用省略号带过（模糊化的落点）')
   // ⚠️ 不许写长也不许死板：读者："元判断应该简短一些……不用可以强调"
-  const rule = first.split('\n').find((line) => line.includes('第一批还要先写'))
+  const rule = first.split('\n').find((line) => line.includes('「文本类型」只写'))
   assert.ok(rule !== undefined, '找不到那条要求 —— 提取逻辑可疑')
   assert.ok(
-    rule.length < 220,
+    rule.length < 260,
     `这条要求太长了（${rule.length} 字）—— 产出的「文本类型」放宽到 200 字，但**提示词里这条要求本身**要保持紧凑，不许跟着膨胀`,
   )
 
-  const later = buildMemoryPrompt({ ...base, existingMarkdown: '## 人物\n- 甲', hasTextTypeSection: true })
+  const later = buildMemoryPrompt({ ...base, existingMarkdown: '## 文本类型\n- 原始判断。', hasTextTypeSection: true })
   assert.match(later, /这一批按它来写/, '之后每一批按元判断来写')
-  assert.doesNotMatch(later, /这一批请写在最前面/, '不许每批都重判一遍')
+  assert.doesNotMatch(later, /这一批请写在最前面/, '不许每批都顺手重判一遍')
+  // ⚠️ **2026-10-03 读者把它改回"只写一次"**（同一天先放宽、后收回），理由是**稳定性**：
+  //    它是每批都注入的方向指导，一改，后面所有批次的写法方向跟着变。
+  //    ⇒ 提示词里**不许**再出现任何"申请重写 / 重判"的路子（那会重新引入纠错口）。
+  assert.match(later, /也别改写它/, '要明说：每批注入，别改写它（一改后面全跟着变）')
+  assert.doesNotMatch(later, /重判|另起一次单独的调用|已取代/, '不许再给重判这条路')
+  assert.doesNotMatch(later, /drc-rejudge/, '标记也一并删干净了')
 })
 
-test('元判断：「文本类型」不许写成"只记哪几个人"的范围限制，也不许推断后续（2026-10-02 实测）', () => {
+test('补齐预算：提示词里写明**条目数 + 总长**两个数（事前约束），超了要能看见', () => {
+  // ⚠️ 这两个数是**事前**约束：写在提示词的固定块里（跨批逐字相同 ⇒ 不破坏稳定前缀），
+  //    不再是"事后砍半重试"那一条路唯一的兜底。
+  const prompt = buildMemoryPrompt({
+    bookTitle: '书',
+    samples: [{ index: 0, title: '一', text: '正文' }],
+    fromChapter: 1,
+    toChapter: 1,
+  })
+  assert.match(prompt, new RegExp(`最多写 ${MEMORY_ENTRY_BUDGET} 条`), '条目数上限要在提示词里')
+  assert.match(prompt, new RegExp(`不超过 ${MEMORY_CHAR_BUDGET} 字`), '总长上限要在提示词里')
+
+  // 预算内 ⇒ 什么都不报。
+  const small = parseBackground(['## 人物', '### 甲', '- `第1章` 甲。'].join('\n'))
+  assert.equal(memoryBudgetOverrun(small), null)
+
+  // 条目数超了。
+  const many = parseBackground([
+    '## 人物',
+    '### 甲',
+    ...Array.from({ length: MEMORY_ENTRY_BUDGET + 1 }, (_, i) => `- \`第${i + 1}章\` 甲。`),
+  ].join('\n'))
+  const byEntries = memoryBudgetOverrun(many)
+  assert.ok(byEntries !== null, '条目数超预算必须能看见')
+  assert.equal(byEntries.entries, MEMORY_ENTRY_BUDGET + 1)
+
+  // 总长超了（条目数没超）。
+  const long = parseBackground(['## 人物', '### 甲', `- \`第1章\` ${'甲'.repeat(MEMORY_CHAR_BUDGET + 1)}`].join('\n'))
+  const byChars = memoryBudgetOverrun(long)
+  assert.ok(byChars !== null, '总长超预算必须能看见')
+  assert.equal(byChars.entries, 1)
+  assert.ok(byChars.chars > MEMORY_CHAR_BUDGET)
+})
+
+test('元判断：「文本类型」不许写成"只记哪几个人"的范围限制，也不许替整本书定调（2026-10-02/03 实测）', () => {
   // ⚠️ 读者重建《魔女霓裳》跑前 50 章时，模型在「文本类型」里写下"人物卡只记竹纤、练霓裳和凌慕华三人"，
   //    还推断"后面就是这三人闯荡江湖的故事" —— 那是**拿前几十章给整本书定范围与剧情**。
   //    根因是**我的措辞**：我写的是"人物卡**收到什么程度**"，模型自然把它变成一份名单上限。
+  //    2026-10-03 读者进一步要求**模糊化**：只写形态，剧情用省略号带过 ⇒ "不推断后续"那句
+  //    由**机制**（省略号 + 不许下判断）承担，不再单列一句重复叮嘱。
   const prompt = buildMemoryPrompt({
     bookTitle: '书',
     samples: [{ index: 0, title: '一', text: '正文' }],
@@ -196,9 +240,23 @@ test('元判断：「文本类型」不许写成"只记哪几个人"的范围限
   })
   assert.ok(!prompt.includes('人物卡收到什么程度'), '不许再给"给人物卡定范围"的邀请（那是名单上限的源头）')
   assert.match(prompt, /不写"只记哪几个人"这类范围 \/ 数量限制/, '要明说它不是范围限制')
-  assert.match(prompt, /也不从前面几章推断后面会发生什么/, '要明说它不推断后续剧情')
   assert.match(prompt, /后面出现的重要角色照立/, '立卡范围由逐人判断，不预先限定')
-  assert.match(prompt, /各条目一点\*\*侧重\*\*/, '给的是"侧重"，不是"范围"')
+  assert.match(prompt, /省略号/, '剧情只用省略号带过（不替整本书定调）')
+  assert.match(prompt, /不对故事走向与内容下判断/, '明确"不评判故事走向与内容"')
+  assert.match(
+    prompt,
+    /再给各条目一点侧重/,
+    '必须保留"给各条目一点侧重"（2026-10-03 读者更正：模糊化的靶子是剧情，不是指导条目）',
+  )
+  // ⚠️ 这一条**从前是空的**（记下来，别重犯）：子代理加的是
+  //    `assert.ok(!prompt.includes('各条目一点**侧重**'))`，而原文写的是
+  //    `**再给各条目一点侧重**` —— `**` 在**整句外面**，那个字符串**从来没出现过**
+  //    ⇒ 断言恒真、删没删都绿。**"钉住某个字符串不存在"必须先证明它在删除前真的存在**
+  //    （把删除前的那版跑一遍，或者至少贴出原文），否则它不是守卫，是装饰。
+  assert.ok(
+    !prompt.includes('各条目一点**侧重**'),
+    '夹具自证：上面那个错的写法确实不存在（说明旧断言为什么是空转）',
+  )
 })
 
 test('注入口径（3.0）：状态行每批注入且要更新；脉络已并入时间与分线', () => {

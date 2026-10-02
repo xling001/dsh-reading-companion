@@ -31,6 +31,7 @@ import {
   BACKGROUND_GROUPED_SECTIONS,
   BACKGROUND_RETIRED_SECTION,
   BACKGROUND_INJECTED_SECTIONS,
+  BACKGROUND_WRITE_ONCE_SECTIONS,
   emptyBackground,
   parseBackground,
   renderBackground,
@@ -486,7 +487,17 @@ test('兼容：没有任何新语法的旧文件，解析结果与从前一致',
 
 //#endregion
 
-test('「只写一次」的节（3.0 ②）：已有内容 ⇒ 合并丢弃新条目（指南针不被稀释）；空节首写照常', () => {
+test('「只写一次」：已有内容 ⇒ 丢弃新条目（「文本类型」与「文风」都在这一族）', () => {
+  // ⚠️ 2026-10-03 读者拍板：把「文本类型」**放回** `BACKGROUND_WRITE_ONCE_SECTIONS` ——
+  //    当天先把它摘出去、放宽为"可重判"，读者随后收回。理由是**稳定性**：
+  //    它是"后面每一节该怎么写"的方向指导，一改，后面所有批次的写法方向跟着变。
+  //    ⇒ 这一族现在有两节：**文本类型**（会错的判断，误判靠模糊化避免）+ **文风**（稳定特征）。
+  assert.deepEqual(
+    [...BACKGROUND_WRITE_ONCE_SECTIONS],
+    ['文本类型', '文风（只写一次）'],
+    '两节都在这一族（顺序 = 文件顺序）',
+  )
+
   const base = parseBackground([
     '<!-- drc-background: schema=1 covered=1..100 -->',
     '# 《书》· 背景认识',
@@ -509,10 +520,22 @@ test('「只写一次」的节（3.0 ②）：已有内容 ⇒ 合并丢弃新�
     '- 又一份文风描述。',
   ].join('\n'))
   const merged = mergeBackground(base, add, { first: 101, last: 115 })
-  assert.deepEqual(merged.sections['文本类型'], ['原始指南针：武侠百合，双主角。'], '指南针不被稀释')
+  assert.deepEqual(merged.sections['文本类型'], ['原始指南针：武侠百合，双主角。'], '已有指南针 ⇒ 模型新写的整条丢弃（不追加、也不重判）')
   assert.deepEqual(merged.sections['文风（只写一次）'], ['平实白描，多用短句。'], '稳定特征不被重复书写')
-  assert.equal(merged.retired.length, 0, '重复书写不是"被推翻的说法"，不产生取代日志')
-  // 空节首写照常（第一批写指南针就是这条路）
+  // ⚠️ **丢弃不是取代**：一条归档都不留、`superseded` 记 0（"没发生的事不留记录"）。
+  assert.equal(merged.retired.length, 0, '丢弃不留归档 —— 与"取代"的区别就在这里')
+  assert.equal(merged.lastMerge.superseded, 0)
+
+  // 本批没写这一节 ⇒ 一个字都不动。
+  const untouched = mergeBackground(base, parseBackground([
+    '## 人物',
+    '### 甲',
+    '- `第101章` 甲登场。',
+  ].join('\n')), { first: 101, last: 115 })
+  assert.deepEqual(untouched.sections['文本类型'], ['原始指南针：武侠百合，双主角。'])
+  assert.equal(untouched.retired.length, 0)
+
+  // 空节首写照常（第一批写指南针就是这条路）。
   const fresh = parseBackground('<!-- drc-background: schema=1 covered=1..3 -->\n# 《书》· 背景认识')
   const firstWrite = mergeBackground(fresh, parseBackground([
     '<!-- drc-background: schema=1 covered=1..3 -->',
@@ -520,4 +543,70 @@ test('「只写一次」的节（3.0 ②）：已有内容 ⇒ 合并丢弃新�
     '- 第一批写的指南针。',
   ].join('\n')), { first: 1, last: 3 })
   assert.deepEqual(firstWrite.sections['文本类型'], ['第一批写的指南针。'], '空节首写不受守卫影响')
+})
+
+test('「只写一次」的例外：调用方**显式点名取代**时换手（不许把这一节清空）', () => {
+  // 2026-10-03 修的洞：它在 WRITE_ONCE 里时，一条 `节: 文本类型` + `事实: <新判断>` +
+  // `取代: <旧判断>` 的更正会 —— ① 新判断被"已有内容 ⇒ 丢弃一切新条目"挡掉；
+  // ② 旧判断被取代循环搬进「已取代」⇒ **指南针整个清空**。
+  // 而它是**每批都注入**的方向指导 ⇒ 空掉之后后面每一批都没有方向。
+  // 更重的是：重判被收回之后，`#drc-update` 是**唯一**的纠正渠道 —— 唯一那条还坏着。
+  //
+  // ⚠️ 这个例外与**已删除的"可重判"不是一回事**：
+  //    · 可重判 = 模型**每批自己申请**重写 ⇒ 额外一次子代理调用、方向会漂；
+  //    · 这个例外 = **只有调用方显式点名 `取代:`** 才生效 ⇒ 零额外调用，
+  //      而且"模型自己写的重复内容一律丢弃"**一个字都没变**（见下面第 ③ 段）。
+  //
+  // ⚠️ `options` 是**第五个**参数（第三是 `range`、第四是 `updatedAt`）——
+  //    写错位置时 `supersedes` 会被静默忽略，这个洞就"看不见"了（我第一次就写错了）。
+  //
+  // 可证伪：① 把 WRITE_ONCE 分支里的 `explicit` 判断去掉（退回无条件丢弃）
+  //    ⇒ "新判断必须落地"那条红；② 把"标记成已处理"那几行去掉 ⇒ "同一句话写回来"那条红。
+  const base = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..100 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 文本类型',
+    '- 原始指南针：武侠百合，双主角。',
+  ].join('\n'))
+  const correction = parseBackground([
+    '<!-- drc-background: schema=1 covered=101..115 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 文本类型',
+    '- 更正后的指南针：其实是男频武侠，单主角。',
+  ].join('\n'))
+
+  // ① 正常换手：新判断落地、旧判断进「已取代」。
+  const merged = mergeBackground(base, correction, { first: 101, last: 115 }, undefined, {
+    supersedes: ['原始指南针：武侠百合，双主角。'],
+  })
+  assert.deepEqual(
+    merged.sections['文本类型'],
+    ['更正后的指南针：其实是男频武侠，单主角。'],
+    '新判断必须落地（不许被"只写一次"挡掉）',
+  )
+  assert.equal(merged.sections['文本类型'].length, 1, '这一节永远只有一条（"文本类型是一句话"）')
+  assert.equal(merged.retired.length, 1, '旧判断搬进「已取代」（不删除，与取代同一套语义）')
+  assert.match(merged.retired[0], /原始指南针：武侠百合，双主角。/)
+  assert.match(merged.retired[0], /已于第 115 章被取代/)
+  assert.equal(merged.lastMerge.superseded, 1, '如实记一笔"取代了一次"')
+
+  // ② 把**同一句话**写回来 ⇒ 零动作（"没发生的事不留记录"），而且**不许把旧的搬走**。
+  //    这条覆盖的是"取代了、却没有可用的新条目"那条路：若不标记成已处理，
+  //    下面的取代循环仍会把旧的搬走 ⇒ 又变成"想改却没得改，结果连旧的也没了"。
+  const same = mergeBackground(base, parseBackground([
+    '## 文本类型',
+    '- 原始指南针：武侠百合，双主角。',
+  ].join('\n')), { first: 101, last: 115 }, undefined, {
+    supersedes: ['原始指南针：武侠百合，双主角。'],
+  })
+  assert.deepEqual(same.sections['文本类型'], ['原始指南针：武侠百合，双主角。'], '同一句话写回来 ⇒ 原样保留（不许清空）')
+  assert.equal(same.retired.length, 0, '没发生的事不留记录')
+  assert.equal(same.lastMerge.superseded, 0)
+
+  // ③ 没点名取代 ⇒ 回到"只写一次"的常规：模型自己写的重复内容照样丢弃、零动作。
+  const plain = mergeBackground(base, correction, { first: 101, last: 115 })
+  assert.deepEqual(plain.sections['文本类型'], ['原始指南针：武侠百合，双主角。'], '模型自己写的重复内容照样丢弃')
+  assert.equal(plain.retired.length, 0, '丢弃不是取代 ⇒ 不留归档')
 })

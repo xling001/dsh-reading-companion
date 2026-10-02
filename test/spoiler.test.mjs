@@ -42,7 +42,6 @@ import {
   renderReadWindow,
   renderSituation,
   sameSessionKey,
-  sessionIdsMatch,
   spoilerGuardReason,
   webGateReason,
 } from '../lib/host/spoiler.js'
@@ -78,17 +77,11 @@ test('会话 id 判据收敛成一份：`sameSessionKey` 的等价矩阵（#13 �
   assert.equal(sameSessionKey(12, 12), false)
   assert.equal(sameSessionKey(undefined, undefined), false)
   // ⚠️ `('','')` 在**键比较**里算同一个键（精确命中优先，与收敛前那 5 份手写实现一字不差）；
-  //    而两个空 id 在放行判定里绝不许算"同一场对话"—— 所以放行走 `sessionIdsMatch`
-  //    （下面 ⑤）。真实调用点两侧都有"空串直接返回"的前置判断，这一格打不到。
+  //    而"两个空 id 绝不许算同一场对话"是**放行判定**那条路的前提，由调用方自己写成
+  //    `normalizeSessionId(a) !== '' && sameSessionKey(a, b)` —— 原先有个独立导出
+  //    `sessionIdsMatch` 专管这件事，生产里从来没人调用（守卫审计：lib 唯一死导出），
+  //    已经删掉。真实调用点两侧都有"空串直接返回"的前置判断，这一格打不到。
   assert.equal(sameSessionKey('', ''), true)
-
-  // ⑤ `sessionIdsMatch` 保持它从前的语义（归一化失败 = 不认）：它现在**委托**给
-  //    `sameSessionKey`，只多一条"归一化必须成功"，所以那四条放行判定一个字都没变。
-  assert.equal(sessionIdsMatch('session-abc', 'abc'), true)
-  assert.equal(sessionIdsMatch('abc', 'abd'), false)
-  assert.equal(sessionIdsMatch('session-', 'session-'), false, '归一化失败 ⇒ 放行判定不认')
-  assert.equal(sessionIdsMatch('', ''), false)
-  assert.equal(sessionIdsMatch(null, null), false)
 })
 
 test('转义：任何形态的连续大括号都不再产出 {{', () => {
@@ -130,12 +123,15 @@ test('会话 id：容忍 session- 前缀差异', () => {
   assert.equal(normalizeSessionId(''), '')
   assert.equal(normalizeSessionId(null), '')
 
-  assert.equal(sessionIdsMatch('session-abc', 'abc'), true)
-  assert.equal(sessionIdsMatch('abc', 'session-abc'), true)
-  assert.equal(sessionIdsMatch('abc', 'abd'), false)
+  // 归一化失败（只剩 `session-` / 空串）时，"放行判定"必须不认 —— 那条路的写法是
+  // `归一化非空 && sameSessionKey(...)`（`sessionIdsMatch` 这个死导出已删）。
+  const passThrough = (a, b) => normalizeSessionId(a) !== '' && sameSessionKey(a, b)
+  assert.equal(passThrough('session-abc', 'abc'), true)
+  assert.equal(passThrough('abc', 'session-abc'), true)
+  assert.equal(passThrough('abc', 'abd'), false)
   // 空 id 永不相等：否则"没有会话"会被判成同一个会话。
-  assert.equal(sessionIdsMatch('', ''), false)
-  assert.equal(sessionIdsMatch(null, undefined), false)
+  assert.equal(passThrough('', ''), false)
+  assert.equal(passThrough(null, undefined), false)
 })
 
 test('章标签：标题自带序号时用书自己的编号，不再叠加我们拼的序号', () => {
@@ -700,7 +696,19 @@ test('背景渲染：没有任何认识时给一句明确的说明，而不是�
 const NUMERALS = ['一', '二', '三', '四', '五', '六', '七', '八']
 
 /** 每章填充正文，长度足够让章首豁免与章尾都落在不同区间。 */
-const FILLER = '雪落在瓦上，像有人在半空里把时间掰开了一点点。'.repeat(200)
+// ⚠️ 填充长度**必须让每章落在 4000 字以内**（2026-10-03：切分阈值从 8000 降到 4000）：
+// 本夹具的契约是"每章带唯一标记"（`【第N章开头】` … `【第N章结尾】`），而超长章会被
+// 切成子章 ⇒ 头尾两个标记落到**不同的章**里，下面所有按章号/标记的断言都会失去前提。
+// 24 × 150 = 3600，加标记约 3620 字；仍然远大于取样额度（几百到 3000），"（中略）"照样能测。
+//
+// ⚠️ **读者 2026-10-03 拍板：这里到此为止，别再为它改东西。** 原话："单章节过长的情况只要
+// 不把我们系统的上下文搞崩溃就行，也就是能用就行，没必要再为了它改更多的东西，可以牺牲
+// 一点防剧透精度，这种情况本来就少。"
+// ⇒ **不要**把本夹具改成"每段一个标记"的段落级版本（那要重写 9 条用例的断言，换来的只是
+//   这种罕见情形下更细的精度）。真觉得需要，**先问读者**，别自己判断"更严就是更好"。
+// ⚠️ 产品侧本来也不需要改：切出来的子章在**所有**下游都是独立章（"章号 = 章节数组位置 + 1"），
+//   这里塌的只是**夹具**"一个书章 = 一个产品章"这个默认。
+const FILLER = '雪落在瓦上，像有人在半空里把时间掰开了一点点。'.repeat(150)
 
 /**
  * 造一本「每章都带唯一标记」的书。

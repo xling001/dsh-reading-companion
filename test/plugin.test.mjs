@@ -12,7 +12,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { after } from 'node:test'
@@ -195,6 +195,58 @@ test('宿主半边：package.json 的 dsh 字段是宿主发现插件的方式',
   assert.equal(pkg.main, './lib/index.js')
   // 浏览器半边的模块 id 必须等于包名，否则 <pkg> 与 <pkg>/client 不会归一。
   assert.ok(pkg.files.includes('lib'), 'lib 必须随包发布')
+})
+
+test('发行包：`scripts/` 按**文件白名单**发布，只发读者面那一个', () => {
+  // ⚠️ 从前这里是**整目录发布**（`"scripts"`）⇒ 读者拿到 6 个纯开发工具（合并背景史 /
+  //    归档背景 / 改主体名 / 清背景笔记 / 重建索引 / 挂进 profile）+ 2 个普查工具。
+  //    其中只有 `reindex-books.mjs` 是**读者面**的：升级后书库索引要重建一次。
+  //    ⇒ 改成按文件白名单。这条守卫钉的是**分类纪律**，不是那一个文件名。
+  //
+  // 可证伪：① 把 `files` 改回 `"scripts"` ⇒ 第一条红；② 从 `files` 里删掉
+  //    `scripts/reindex-books.mjs` ⇒ 第二条红；③ 新建一个 `scripts/foo.mjs` 而不表态
+  //    ⇒ 第三条红（它逼你**做一次决定**：发还是不发）。
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  const published = pkg.files.filter((entry) => entry === 'scripts' || entry.startsWith('scripts/'))
+
+  assert.ok(
+    !published.includes('scripts'),
+    '不许再整目录发布 scripts/ —— 那等于"默认把开发工具也发给读者"',
+  )
+  assert.ok(
+    published.includes('scripts/reindex-books.mjs'),
+    'reindex-books 是读者升级时要跑的，必须随包发布',
+  )
+
+  // ⚠️ **派生**而不是把清单抄一遍：目录里**每一个** `scripts/*.mjs` 都必须被明确分类 ——
+  //    要么随包发布、要么显式列进 DEV_ONLY。新增脚本时这条会红，逼你表态，
+  //    而不是让它**悄悄跟着发出去**（"默认发布"正是这条要治的病）。
+  const DEV_ONLY = [
+    'archive-background.mjs',
+    'clean-background-note.mjs',
+    'guard-census.mjs',
+    'guard-classify.mjs',
+    'link-into-profile.mjs',
+    'merge-background-history.mjs',
+    'merge-background-subjects.mjs',
+    'rebuild-library-index.mjs',
+  ]
+  const all = readdirSync(join(ROOT, 'scripts')).filter((name) => name.endsWith('.mjs'))
+  assert.ok(all.length >= 8, `只扫到 ${all.length} 个脚本 —— 扫描逻辑可疑`)
+
+  const unclassified = all.filter((name) => !published.includes(`scripts/${name}`) && !DEV_ONLY.includes(name))
+  assert.deepEqual(
+    unclassified,
+    [],
+    `这些脚本没被分类（要么随包发布、要么加进 DEV_ONLY）：${unclassified.join(' / ')}`,
+  )
+  // 反向也要成立：DEV_ONLY 里写的必须真的存在 —— 别留一份过期的排除名单。
+  const stale = DEV_ONLY.filter((name) => !all.includes(name))
+  assert.deepEqual(stale, [], `DEV_ONLY 里有已经不存在的脚本：${stale.join(' / ')}`)
+  // 而且被排除的那些**真的**不在发布清单里（防"名单写了、files 忘了"）。
+  for (const name of DEV_ONLY) {
+    assert.ok(!published.includes(`scripts/${name}`), `${name} 是开发侧工具，不该随包发布`)
+  }
 })
 
 test('宿主半边：客户端半边真的依赖谁，就在 dsh.client.inject 里声明谁', () => {

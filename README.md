@@ -268,7 +268,7 @@ node scripts/link-into-profile.mjs --profile desktop --unlink    # 完全回滚
 看不到时按顺序查：**前置装了没？**（这一步最容易被漏）→ **重启了没？**（右侧栏选择器的条目
 完全由插件注册的 `guide` 数组构建，看不到就是客户端半边没挂上）→ 都没有看控制台报错，请开 issue。
 
-接着导一本书、读一章、记一条笔记。最短全流程与发版前的真机回归清单在 [`docs/manual-testing.md`](./docs/manual-testing.md)。
+接着导一本书、读一章、记一条笔记。最短全流程与发版前的真机回归清单在 [`docs/manual-testing.md`](./docs/manual-testing.md)（⚠️ 这份是**开发用**的，不随包发布）。
 
 ### 关闭与卸载
 
@@ -423,8 +423,9 @@ docs/                       # design（现行）/ design-v1-archive（封存）/
 ## 开发
 
 ```bash
-npm test                                  # 全部测试（Node 内置 test runner，647 项；跑前自动清 test/.tmp）
+npm test                                  # 全部测试（Node 内置 test runner；跑前自动清 test/.tmp）
 npm run test:no-isolation                 # 受限沙箱里（无法 spawn 子进程）用这条
+npm run guard:census                      # 守卫语料普查（只读）：用例总数 / 接线守卫 / 数值钉子 / 注释占比
 node scripts/reindex-books.mjs            # 预演：让书架里已有的书吃到新切分规则
 node scripts/reindex-books.mjs --apply    # 真的落盘（先把要改的文件备份到 backups/）
 node scripts/rebuild-library-index.mjs            # 预演：扫 books/<bookId>/meta.json 重建书架索引
@@ -434,6 +435,18 @@ node scripts/archive-background.mjs --file <background.md 路径> --progress 300
 node scripts/archive-background.mjs --file <background.md 路径> --progress 300 --apply        # 真的落盘（先整份备份 + 写增量记录）
 node scripts/merge-background-history.mjs --dir <background.history> --include-current --file <background.md>  # 取并集（默认预览）
 ```
+
+> ⚠️ **上面不是完整清单**（`scripts/` 里还有 `merge-background-subjects.mjs`、
+> `link-into-profile.mjs`、`guard-census.mjs`）—— **以目录为准**，别在这里维护第二份。
+> 同理**用例数不写死**：每加一条守卫它就过期一次，要看当前数请跑 `npm run guard:census`。
+
+> ⚠️ **这些开发脚本只在源码仓库里，发行包不带**：发行包只发布
+> `scripts/reindex-books.mjs`（**读者面**的那一个 —— 升级后书库索引要重建一次）。
+> 其余（重建索引 / 清背景笔记 / 冷归档 / 合并背景史 / 改主体名 / 挂进 profile / 普查工具）
+> 属于开发侧，**不随包发布**。从 npm 装来的读者只能跑 `reindex-books`；
+> 要跑其余的请 clone 仓库。⚠️ 这条不是"记得改文档"——`test/plugin.test.mjs` 里有一条
+> **派生**的守卫：目录里每个 `scripts/*.mjs` 都必须被明确分类（随包发布 / 显式排除），
+> 新增脚本时它会红，逼你表态。
 
 > **冷归档是什么**：把**超出活跃窗口**（默认 120 章）的旧条目从活分区**搬**进 `## 冷档案`
 > —— **纯代码、零模型调用、原文一字不改**。它不进提示词（读者族），所以注入量由"活跃窗口"决定，

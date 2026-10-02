@@ -1018,7 +1018,6 @@ test('书库：背景备份"一代一份"——带时间戳，同秒也不互相
     assert.equal(backups.length, 2, '两代都要在，一代都不能被盖掉')
     for (const item of backups) {
       assert.match(item.name, /^background\.bak\.\d{8}-\d{6}(-\d+)?\.md$/)
-      assert.equal(item.legacy, false)
     }
   } finally {
     f.cleanup()
@@ -1035,7 +1034,9 @@ test('书库：遗留的单槽 background.bak.md 仍算一代（mtime 补时间�
 
     const backups = f.library.listBackgroundBackups(book.bookId)
     assert.equal(backups.length, 1)
-    assert.equal(backups[0].legacy, true)
+    // 老单槽文件**按文件名**认出来（原先靠 `legacy:` 标志，那个字段 client 零引用、
+    // 2026-10-03 A 档已删）。断言真实身份比断言一个布尔标志更硬。
+    assert.equal(backups[0].name, 'background.bak.md')
     assert.match(backups[0].stamp, /^\d{8}-\d{6}$/, '老文件没有时间戳，用 mtime 补一个')
 
     // 老文件留在原地：那是用户的文件，插件没有理由动它。

@@ -168,7 +168,12 @@ export async function startServer(dir, options = {}) {
         return () => {}
       },
     },
-    logger: {},
+    // ⚠️ 可以被用例换成一个**记录型** logger：`fillMemoryGap` 里"如实说一句"那条
+    //    （这一批写超预算）走的是 `deps.logger`，而它在四层传递里最容易断在最后一层
+    //    （不传 ⇒ `?.warn?.()` 永远静默）。给了注入点，才钉得住接线。
+    //    ⚠️ 2026-10-03：从前这里还有第二条（「文本类型」重判没成功）—— 重判已按读者
+    //    要求收回（改回"只写一次"），那条 warn 与那次独立调用一起删了，注入点留着给预算那条。
+    logger: options.logger ?? {},
   }
 
   host.apply(ctx, { storageDir: dir, ...(options.config ?? {}) })

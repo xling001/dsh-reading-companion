@@ -19,9 +19,11 @@ import assert from 'node:assert/strict'
 import {
   BACKGROUND_GROUPED_SECTIONS,
   BACKGROUND_INJECTED_SECTIONS,
+  BACKGROUND_LEGACY_SECTIONS,
   BACKGROUND_SECTION_WEIGHTS,
   BACKGROUND_SECTIONS,
   emptyBackground,
+  isGroupedSection,
   mergeBackground,
   normalizeSectionName,
   parseBackground,
@@ -297,13 +299,28 @@ test('接线：更新块指定兜底 + 主体时才通过；缺主体被拒', ()
   assert.equal(missing.ok, false)
   assert.equal(missing.reason, 'NO_SUBJECT')
 
-  // 端到端：说明里给出的**节名**（模型要照抄的那串字）真能通过校验，并且装成
-  // `mergeBackground` 认的形状。说明文本本身也含一个示例块，所以这里只喂自己
-  // 这一块——说明的可解析性由 background-update.test.mjs 的往返用例负责。
-  assert.ok(
-    renderUpdateInstruction().includes('「人物 / 人物关系 / 世界观 / 文风（只写一次） / 通用概念」之一')
-      && renderUpdateInstruction().includes('前文脉络') === false,
-    '说明书里那串"照抄这个"的节名必须与校验器接受的一致（3.0：脉络已并入，不再宣传；校验器仍接受旧文件的脉络修正）',
+  // 端到端：说明里给出的**节名清单必须与校验器接受的一致**。
+  // ⚠️ 2026-10-03 改成**关系断言**：原先这里钉的是手写的 5 个名字（`includes('「人物 / …」之一')`），
+  //    而校验器接受 9 节 —— 于是"清单与校验器一致"这句承诺**根本没有代码载体**，
+  //    两处漂移了也不知道（正是本仓库反复栽的"同一概念多份定义"）。现在两边都从
+  //    `BACKGROUND_SECTIONS` / `isGroupedSection` 派生，谁改单边这条就红。
+  // ⚠️ 口径是"**校验器接受的** 减去 **legacy**"：旧「前文脉络」仍被接受（旧文件里真有
+  //    这些内容，接受才不至于丢掉修正），但**不宣传**（它已并入「时间与分线」）。
+  const instruction = renderUpdateInstruction()
+  const advertised = BACKGROUND_SECTIONS.filter((name) => !BACKGROUND_LEGACY_SECTIONS.includes(name))
+  for (const name of advertised) {
+    assert.ok(instruction.includes(name), `说明书必须列出校验器接受的每一节，缺「${name}」`)
+  }
+  for (const legacy of BACKGROUND_LEGACY_SECTIONS) {
+    assert.equal(instruction.includes(legacy), false, `legacy 名「${legacy}」不许出现在"照抄这个"的清单里`)
+  }
+  // "必须给 `主体`"点名的必须**正好是分组节**（走 isGroupedSection，别手写第二份清单）
+  const subjectClause = /其中「([^」]+)」\*\*必须给/.exec(instruction)
+  assert.ok(subjectClause !== null, '说明书必须点明哪些节需要 `主体`')
+  assert.deepEqual(
+    subjectClause[1].split(' / ').slice().sort(),
+    advertised.filter((name) => isGroupedSection(name)).slice().sort(),
+    '「必须给主体」点名错了会让模型照说明书写、然后被 NO_SUBJECT 拒掉（「文风」不是分组节、「通用概念」是）',
   )
   const text = [
     '<!--drc-update',

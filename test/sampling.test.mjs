@@ -254,3 +254,81 @@ test('抽样：库侧兜底默认值与配置缺省值是**同一套**（别写�
     f.cleanup()
   }
 })
+
+// --------------------------------------------------------------------------------------
+// 长章取样：**B 半边已删除**（2026-10-03，读者的选择）
+//
+// 从前这里有五条用例守"4000–8000 的保完整章按比例读厚"（额度 =
+// max(均分值, ⌊章长 × longChapterRatio⌋)，上限 longMaxPerChapter）。切分阈值降到
+// 4000 之后**那一档不存在了**：> 4000 的章在导入时就被切成 ~2500 的子章，子章各自
+// 拿一份均分额度 —— 比整章按比例读厚**更深**。所以那五条连同机制一起删除，
+// 只留下下面这条钉住"那一档真的没有了"。
+// --------------------------------------------------------------------------------------
+
+/** 506 字的一段。 */
+const PARA_506 = LINE.repeat(22)
+
+/**
+ * 一本全由等长章组成的书：默认 15 段 ≈ **7604** 字/章（> 5000 ⇒ 导入时会被切）。
+ * `paragraphsPerChapter` 调大可以造出更长的章（配合 `longChapterSplit: null` 用）。
+ *
+ * ⚠️ **长度要同时满足三件事**，换阈值或片长时先看这三条（否则下面那条用例会以
+ *    令人费解的方式红）：
+ *   ① **被切**：`7604 > thresholdChars`（5000），余量 2604 字；
+ *   ② **切成 3 片**：`ceil(7604 / targetChars)`（3500）`= 3` —— 要求长度 > **7000**，余量 604；
+ *   ③ **小于 8000**：这是那条用例的**证伪条件** —— 把 `thresholdChars` 调回 8000 时，
+ *      7604 必须**不再被切**（否则章数断言照样绿，证伪就失效了），余量 396。
+ * ② 与 ③ 把长度夹在 **(7000, 8000)** 这条窄带里，7604 落在它的中间。
+ * ⚠️ 这正是 `targetChars` 停在 **3500** 而不是 4000 的原因：4000 下"3 片"要求长度 > 8000，
+ *    与 ③ 直接冲突（见 `chapters.js` 里 `DEFAULT_LONG_CHAPTER_SPLIT` 的说明）。
+ * ⚠️ 段数**不能少**：10 段 = 5069 字在阈值 5000 下只高 **69 字**，与阈值绑得太死
+ *    （正是 `spoiler` 夹具踩过的坑）。
+ */
+function uniformChapterBook(chapterCount, paragraphsPerChapter = 15) {
+  const out = []
+  for (let i = 1; i <= chapterCount; i += 1) {
+    out.push(`第${i}章 长章之${i}`)
+    out.push(Array.from({ length: paragraphsPerChapter }, () => PARA_506).join('\n'))
+    out.push('')
+  }
+  return out.join('\n')
+}
+
+/** 通用夹具：给定书文与 createLibrary 选项。 */
+function makeFixtureFor(bookText, libraryOptions = {}) {
+  seq += 1
+  const root = join(TMP_ROOT, `uniform-${process.pid}-${Date.now()}-${seq}`)
+  const storageDir = join(root, 'storage')
+  mkdirSync(join(storageDir, 'inbox'), { recursive: true })
+  const sourcePath = join(root, '等长书.txt')
+  writeFileSync(sourcePath, Buffer.from(bookText, 'utf8'))
+  const library = createLibrary({ storageDir, fallbackBlockChars: 1000, ...libraryOptions })
+  library.ensureDirs()
+  const { book } = library.importBook({ absPath: sourcePath, title: '等长书' })
+  return { root, library, bookId: book.bookId, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+test('长章取样：中间档已消失 —— 7604 字的章在导入时就被切成 3 片，各按均分拿额度', () => {
+  // ⚠️ 这条**取代**了 B 半边那五条用例（见上方说明）。它守的是"吃掉中间档"这件事
+  //    真的发生了，而不是只改了注释。
+  //    证伪方式：把 `DEFAULT_LONG_CHAPTER_SPLIT.thresholdChars` 调回 8000 ⇒ 7604 字的
+  //    章保持完整、章数断言当场红（也说明"中间档"又回来了）。
+  const f = makeFixtureFor(uniformChapterBook(6))
+  try {
+    const all = f.library.chapters(f.bookId).chapters
+    // 片数 = ceil(7604 / 3500) = 3 ⇒ 6 章 × 3 = 18。
+    assert.equal(all.length, 18, `6 个 ~7604 字的章各切 3 片 = 18，实际 ${all.length}`)
+
+    // 均分模式下每片拿同一个 unit；只有"重点章"（开头 5 片 / 换卷那一片）拿 3 倍。
+    // 18 片：前 5 片重点（Σw = 5×3 = 15）+ 后 13 片（13）⇒ Σw = 28 ⇒
+    // unit = ⌊18000 / 28⌋ = 642。⚠️ 若 B 还在，整章会拿到 max(642, ⌊7604×0.25⌋ = 1901)。
+    const sample = f.library.sampleChapters(f.bookId, 0, 17)
+    const plain = sample.chapters.at(-1).text.length
+    assert.ok(
+      plain >= 600 && plain <= 900,
+      `非重点子章应拿均分值（约 642），实际 ${plain} —— 超过 900 说明"按比例读厚"又回来了`,
+    )
+  } finally {
+    f.cleanup()
+  }
+})

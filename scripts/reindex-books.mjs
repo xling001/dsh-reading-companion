@@ -16,8 +16,13 @@
  *   node scripts/reindex-books.mjs --storage <dir> # 指定书库目录
  *
  * ⚠️ 落盘前会检查 `notes.md` / `background.md` / `discussions.jsonl` 里按章号
- * 记下的内容：只要它们会因为重切而漂，脚本就**拒绝落盘**并告诉你原因。那些
- * 文件是人写的，重映射它们不是这个脚本该擅自做的事。
+ * 记下的内容：
+ *   - **能按字符位置算准的**（落进被切分章里的笔记、背景认识的 `covered` 区间）
+ *     ⇒ **精确搬家**：笔记只改属性行与标题行的坐标（摘抄一字不动）、covered 换算成
+ *     新章号（条目正文不动）；
+ *   - **算不准的**（讨论时间线没有片内偏移、对不上号的旧笔记）⇒ **拒绝落盘**并说明
+ *     原因。那是人写的内容，猜一个章号比拒绝更糟。
+ * 落盘前会先把待改的文件整份复制到 `<storage>/backups/reindex-<bookId>-<时间戳>/`。
  */
 
 import { homedir } from 'node:os'
@@ -74,6 +79,16 @@ function formatReport(report) {
 
   if (report.remap.shifted) {
     lines.push(`  章号整体前移：进度${report.remap.progress ? '已' : '无需'}重映射，草稿重映射 ${report.remap.drafts} 条`)
+  }
+  // 超长章切分（B+D）：迁移时最要紧的一行——"我的笔记和覆盖去哪儿了"。
+  if (report.notes !== null && report.notes !== undefined) {
+    lines.push(`  按章笔记：${report.notes.total} 条 —— ${report.notes.intact} 条位置不变、`
+      + `${report.notes.remapped ?? 0} 条已算准新坐标（摘抄一字未改）、`
+      + `${report.notes.moved} 条挪了位置、${report.notes.lost} 条对不上、${report.notes.unverifiable} 条无法核对`)
+  }
+  if (report.remap.backgroundCovered !== null && report.remap.backgroundCovered !== undefined) {
+    const { from, to } = report.remap.backgroundCovered
+    lines.push(`  背景认识覆盖：第 ${from.first}–${from.last} 章 → 第 ${to.first}–${to.last} 章（条目正文不动）`)
   }
   for (const warning of report.warnings) lines.push(`  warning: ${warning}`)
   for (const item of report.drift) lines.push(`  ⚠️ 需要人工处理：${item}`)

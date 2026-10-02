@@ -87,13 +87,22 @@ npm test                    # 等价于 node --test（默认进程隔离，慢�
 
 ## 关于测试替身的盲区（先读这一节再改客户端）
 
-`test/client.test.mjs` 用的 React 替身**不执行 effect、不做状态更新**
-（`useState` 返回 `[initial, () => {}]`）。这是刻意的取舍——装真 `react-dom`
-需要一整套渲染栈与宿主壳。
+客户端半边有**两套**替身，用途不同：
 
-**后果**：任何"只有状态更新之后才会走到"的分支，冒烟测试**覆盖不到**。
+| 替身 | 在哪 | 能做什么 |
+|---|---|---|
+| **静态替身** | `test/client.test.mjs` | `useState` 只取初值（`[initial, () => {}]`）、`useEffect` 不跑 ⇒ 组件**停在第一帧** |
+| **最小钩子运行时** | `test/helpers/hooks-runtime.mjs`（范式见 `test/client-runtime.test.mjs`） | 状态真的更新并重渲染、effect 真的跑（依赖比较 + 清理）、`memo` 真的浅比较并跳过、ref 真的挂、按钮真的点得动、能观察"组件往 DOM 写了什么" |
 
-本项目应对它的方式是**把判定提成纯函数**并单独测。已有的先例：
+**改客户端时的默认动作：能渲染就别读源码。**"组件写了但没挂上 / 回调漏接 / 渲染顺序不对 /
+effect 依赖漏了"这类失效模式，用运行时**渲染一次**来钉；只有**样式与模板文本**（那段 CSS
+长什么样、模板字符串里不许出现反引号）才留文本断言——它们钉的就是文本本身，替身没有 DOM，
+搬过去只会让断言变弱。
+
+**仍然盲的**（运行时刻意不做，多做的部分只会让文件更难懂）：真 DOM 与 CSS 布局（没有 diff、
+没有样式计算）、事件系统与冒泡、并发调度、Context / Suspense。
+
+第二件仍然有效的应对方式：**把判定提成纯函数**并单独测。已有的先例：
 `groupBooksByCategory` / `shelfBindingState` / `mergeNotesPage` / `planNoteSend` /
 `resolveRestoreView` / `takeDraftHandoff`。
 
@@ -108,7 +117,9 @@ npm test                    # 等价于 node --test（默认进程隔离，慢�
 - 正文顶部那颗「笔记」按钮点了**毫无反应**（`ReaderPanel` 漏传 `onOpenNotes`）；
 - 在笔记页点「发送到会话」，跳过去之后被弹回正文，**正在写的那条笔记从眼前消失**。
 
-**发现**这些靠人在真机上一次次点击；**定位与修复**靠把判定提成纯函数之后补测。
+**发现**这些靠人在真机上一次次点击；**定位与修复**靠把判定提成纯函数之后补测，或者
+（2026-10-03 起）用运行时渲染一次直接钉住行为——例如"位置恢复"那条现在直接观察滚动容器
+的写入：正文没到不许落位、到达那一趟必须落一次、依赖没变不重复落位、换章要重新落位。
 
 > 最后一类（漏传 prop）有个更可扩展的堵法，值得沿用：**别钉名字，钉规律。**
 > 现在的用例会取出 `ReaderView(props)` 的解构列表，再取出 `ReaderPanel` 里对
@@ -184,15 +195,20 @@ npm test                    # 等价于 node --test（默认进程隔离，慢�
 | `lib/client.js` | 浏览器半边：页签注册与「书架 → 目录 → 正文 → 笔记 → 陪读」面板 |
 | `cordis.patch.yml` | 装配行（`id` 必须等于宿主半边的 `name`）|
 | `test/*.test.mjs` | 零依赖测试（清单见上）|
-| `scripts/link-into-profile.mjs` | 幂等、可回滚的 profile 安装/卸载 |
-| `scripts/reindex-books.mjs` | 让书架里**已有**的书吃到新的切分规则（默认预演，`--apply` 落盘并备份）|
-| `docs/design.md` | 设计稿（**现行约定**）：定位、铁律、有意为之、已裁定不做、测试 —— **动手之前读这一份** |
-| `docs/design-history.md` | 逐条修订史（v1.89 → 至今，新在前）：每一轮改了什么、为什么改、踩过哪些坑 |
-| `docs/design-v1-archive.md` | v1 时代封存：v1.1–v1.88 的修订史与原始设计正文（契约、数据模型、算法、风险清单）|
-| `docs/archive/epub-evaluation.md` | EPUB 导入的调研结论（**先不做**）—— 内部记录，**不随包发布**（不在 `files: docs/*.md` 里）|
-| `docs/manual-testing.md` | 发版前的真机回归清单（P1–P19）|
-| `docs/publishing.md` | **打包契约**：一个 DSH 插件在磁盘上必须长什么样 |
+| `scripts/*.mjs` | 维护工具（**清单以目录为准，别在这里维护第二份**）。读者会反复用的只有 `reindex-books.mjs`（让书架里**已有**的书吃到新的切分规则，默认预演、`--apply` 落盘并备份）；其余是开发侧的修复 / 迁移 / 审计工具 |
+| `docs/design.md` | 设计稿（**现行约定**）：定位、铁律、有意为之、已裁定不做、测试 —— **动手之前读这一份** · ✅ 随包发布 |
+| `docs/design-history.md` | 逐条修订史（v1.89 → 至今，新在前）：每一轮改了什么、为什么改、踩过哪些坑 · ⛔ 不随包 |
+| `docs/design-v1-archive.md` | v1 时代封存：v1.1–v1.88 的修订史与原始设计正文（契约、数据模型、算法、风险清单）· ⛔ 不随包 |
+| `docs/archive/epub-evaluation.md` | EPUB 导入的调研结论（**先不做**）—— 内部记录 · ⛔ 不随包（在 `docs/` 的子目录里）|
+| `docs/manual-testing.md` | 发版前的真机回归清单（P1–P19）· ⛔ 不随包（开发用）|
+| `docs/publishing.md` | **打包契约**：一个 DSH 插件在磁盘上必须长什么样 · ✅ 随包发布 |
 | v2.1.0 审计报告（**不在仓库也不在包里**：单次审计产物） | 代码/兼容/纯净性审计 + **早期历史记录**（已废弃方向的结论，不再随包发布） |
+
+> **发行包 = `package.json` 的 `files` 白名单**，现在是：`lib` / `docs/design.md` /
+> `docs/publishing.md` / `scripts` / `cordis.patch.yml` / `README.md` / `CONTRIBUTING.md` / `LICENSE`。
+> ⚠️ 两份修订史（合计约 **543 KB**）与 `manual-testing.md` **刻意不随包**：`lib/` 只在
+> **注释**里引用它们、运行时零读取 —— 那些 `docs/… §N` 引用在**仓库**里解析即可
+> （读代码的人本来就在仓库里）。
 
 ## Windows 贡献者注意
 

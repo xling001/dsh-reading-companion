@@ -13,144 +13,21 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 // ⚠️ 唯一一处从浏览器半边的测试里 import 宿主模块。原因见文末那条「两边逐字
 //    相同」的契约测试：`chapterHeading` 是宿主 `chapterLabel` 的**镜像**，
 //    而镜像只有在被摆在一起比对时才算数。
 import { chapterLabel } from '../lib/host/spoiler.js'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+// 浏览器半边的公共加载器（doc 替身 / react 替身 / factory 物化）。
+// 抽出去的理由见那个文件的开头：新的 hooks 运行时也走同一套流程，
+// 各写一份的话一处修了另一处不会跟着好。
+import { ROOT, freshUrl, makeFakeDocument, reactStub, loadClientFactory, loadClientModule } from './helpers/client-loader.mjs'
+
+// ROOT 由公共加载器提供（test/helpers/client-loader.mjs）
 const PLUGIN_NAME = 'dsh-reading-companion'
 const TAB_ID = 'dsh-reading-companion:reader'
-
-let loadSeq = 0
-function freshUrl(rel) {
-  loadSeq += 1
-  return `${pathToFileURL(join(ROOT, rel)).href}?t=${loadSeq}`
-}
-
-/**
- * document 替身：真的维护「当前挂在 head 上的 style」这份状态。
- *
- * 这一点是刻意的——如果 `querySelector` 恒返回 null，「幂等注入」就永远为真，
- * 测试等于没测。所以这里把 appended 当作真实 DOM 来维护。
- */
-function makeFakeDocument() {
-  const created = []
-  const appended = []
-  return {
-    created,
-    get liveStyles() {
-      return appended
-    },
-    querySelector(selector) {
-      const matched = /^style\[data-plugin-css="(.+)"\]$/.exec(selector)
-      if (matched === null) return null
-      return appended.find((el) => el.attrs['data-plugin-css'] === matched[1]) ?? null
-    },
-    createElement() {
-      const el = {
-        tagName: 'style',
-        attrs: {},
-        textContent: '',
-        setAttribute(key, value) {
-          this.attrs[key] = value
-        },
-        remove() {
-          const at = appended.indexOf(el)
-          if (at !== -1) appended.splice(at, 1)
-        },
-      }
-      created.push(el)
-      return el
-    },
-    head: {
-      appendChild(el) {
-        appended.push(el)
-      },
-    },
-  }
-}
-
-/** 浅比较：与 React.memo 的默认比较语义一致（逐 key 用 Object.is）。 */
-function shallowEqualProps(a, b) {
-  if (Object.is(a, b)) return true
-  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false
-  const keysA = Object.keys(a)
-  if (keysA.length !== Object.keys(b).length) return false
-  for (const key of keysA) {
-    if (!Object.hasOwn(b, key) || !Object.is(a[key], b[key])) return false
-  }
-  return true
-}
-
-/** react 替身：工厂期只定义组件，不会调用这些 hook。 */
-const reactStub = {
-  createElement: (...args) => ({ type: args[0], props: args[1] ?? null, children: args.slice(2) }),
-  useCallback: (fn) => fn,
-  useEffect: () => {},
-  useMemo: (fn) => fn(),
-  useRef: (initial) => ({ current: initial }),
-  useState: (initial) => [initial, () => {}],
-  /**
-   * `memo` 替身：真的做浅比较、命中时真的跳过渲染，并记账。
-   *
-   * 为什么不写成 `memo: (fn) => fn`：笔记列表的性能**全靠** memo，而
-   * "抽成独立组件但忘了包 memo"、或者"给子组件传了每次新建的数组/函数"，
-   * 都是**不会报错、只会变慢**的失效模式。只有让替身真的比较，测试才钉得住。
-   */
-  memo: (fn) => {
-    let lastProps = null
-    let rendered = false
-    const wrapper = (props) => {
-      if (rendered && shallowEqualProps(lastProps, props)) {
-        wrapper.bailouts += 1
-        return null
-      }
-      lastProps = props
-      rendered = true
-      wrapper.renders += 1
-      return fn(props)
-    }
-    wrapper.__memo = true
-    wrapper.__inner = fn
-    wrapper.renders = 0
-    wrapper.bailouts = 0
-    return wrapper
-  },
-}
-
-/** 载入浏览器半边并捕获它注册的 factory。 */
-async function loadClientFactory() {
-  let captured = null
-  let loadCount = 0
-  globalThis.window = {
-    __ModuleLoader__: {
-      load(definition) {
-        loadCount += 1
-        captured = definition
-      },
-    },
-  }
-  globalThis.document = makeFakeDocument()
-  try {
-    await import(freshUrl('lib/client.js'))
-  } finally {
-    delete globalThis.window
-    delete globalThis.document
-  }
-  return { captured, loadCount }
-}
-
-/** 物化 factory，拿到模块。 */
-async function loadClientModule() {
-  const { captured } = await loadClientFactory()
-  return captured.factory((spec) => {
-    if (spec === 'react') return reactStub
-    throw new Error(`未预期的 require: ${spec}`)
-  })
-}
 
 /** 记录注册行为的宿主替身。effect 立即求值并保留 disposer。 */
 function makeFakeClientContext(options = {}) {
@@ -558,68 +435,38 @@ test('笔记页折叠：短文原样、长文截断并标记 clamped', async () 
   assert.equal(clampNoteText(undefined).clamped, false)
 })
 
-test('接线守卫：正文页角标只给摘要（不再把笔记全文铺进正文流）', () => {
+test('样式与模板：正文页角标块用自己的样式类（换回界面字体）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
-  // 角标那段（用渲染里独有的文案定位，**不能**用「本章你记过」—— 那串在
-  // state 的注释里也出现过，切片会落在注释上）。
-  const marker = source.indexOf('收起本章的')
-  assert.ok(marker > 0, '找不到正文页角标')
-  const block = source.slice(marker - 900, marker + 1500)
-  assert.ok(block.includes('noteSummary(note)'), '角标要用一行摘要')
-  assert.ok(!block.includes('note.thought'), '角标里不该再渲染感想全文（读者裁定：正文页不承载长文）')
-  assert.ok(!block.includes('note.excerpt'), '角标里不该再渲染摘抄全文')
-
-  // 跳转必须走一次性请求：同章内跳转会被位置账本（positionKey）吞掉。
-  assert.ok(source.includes('jumpToNote'), '角标点击要经过 jumpToNote')
-  assert.ok(source.includes('setJumpRequest('), '跳转要落成一次性请求')
-  assert.ok(
-    source.includes('setJumpRequest(null)'),
-    '换章必须清掉跳转请求，否则旧偏移会去滚新章',
-  )
-})
-
-test('接线守卫：已读完解锁在两处都常驻可见（漏传 prop 是不报错的洞）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-  // ⚠️ 这条守卫的存在理由与 `onOpenNotes` 那次真机反馈同源：渲染层不认识"哪个 prop
-  // 忘了传"，漏了只是**安静地不显示** —— 而"静默解锁"恰恰是这件事最不能接受的形态。
-  assert.ok(
-    source.includes('finished: book?.finished === true'),
-    'ReaderPanel 必须把 finished 传给正文页（从 book 上取 —— background 在它的作用域里不存在）',
-  )
-  assert.ok(source.includes('已解锁全书'), '正文页要有常驻标记')
-  assert.ok(
-    source.includes('已解锁：这本书的全文对陪读 AI 可见'),
-    '面板要有常驻横幅（不能只体现在按钮文案上）',
-  )
-  // v1.52：解锁的二次确认从浏览器原生弹框改成了站内确认条（同一个 confirmBar）。
-  assert.match(source, /confirmBar\(\{/, '解锁要二次确认（v1.52 起走站内确认条）')
-  // v1.52：渲染改成三分支（收回 / 确认条 / 标记按钮），所以断言改成两侧各自的落盘调用。
-  assert.match(source, /saveFinished\(false\)/, '收回解锁必须一键即时（收紧安全不需要摩擦）')
-  assert.match(source, /saveFinished\(true\)/, '解锁（经确认条之后）才落盘')
-  assert.ok(source.includes('/finished`'), '要落到宿主的标记路由上')
+  // 转不了：运行时替身刻意没有 DOM / CSSOM / 布局引擎 —— "挂的是哪个类、那条 CSS 里
+  // 写了什么字体栈"在渲染树上看不见，硬凑只会变成另一种源码文本钉子。
+  //
   // 角标块必须**换回界面字体**：它长在阅读区里，而阅读区整块套着读者的字体偏好 ——
   // 不换的话笔记摘要与小说正文长得一模一样（真机反馈：分不清哪是「我写的」）。
   assert.ok(source.includes("className: 'drc-chapter-notes'"), '角标块要用自己的样式类')
   assert.ok(/\.drc-chapter-notes \{/.test(source), 'CSS 里要有 .drc-chapter-notes（含界面字体栈）')
 })
-
-test('接线守卫：二级确认统一走 confirmBar（不许再出现浏览器原生确认框）', () => {
+test('文本契约：不许再出现浏览器原生确认框', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
+  // 留着的理由：行为版（`client-runtime-views.test.mjs` 装了会抛错的假 `window.confirm`）
+  // 只能覆盖**跑到过的**确认处 —— 我跑了「解锁已读完」与「清空回收站」两处；
+  // 丢弃草稿 / 彻底删除单条 / 切换草稿 / 跳读闸 这四处没跑，若有人只把
+  // `window.confirm` 塞回那几处，行为用例不会红。这条字面反向守卫补的正是那个缺口。
   // ⚠️ 反向守卫：注释里提到 `window.confirm` 没关系（那是解释为什么不用它），
   // 但**调用**不许再出现 —— 三处确认必须是同一套形态。
   assert.ok(!/window\.confirm\(/.test(source), '不许再用浏览器原生确认框')
-  assert.ok(source.includes('function confirmBar('), 'confirmBar 要在（三处共用的确认条）')
-  assert.ok(source.includes('className: \'drc-confirm\''), '确认条要用 .drc-confirm 这个类')
-  assert.match(source, /confirmBar\(\{/, '解锁「已读完」要走它')
-  assert.match(source, /\.drc-confirm \{/, 'CSS 里要有 .drc-confirm')
 })
 
+test('样式与模板：确认条的样式规则', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+  // 转不了：替身没有 CSSOM —— "这条规则在不在、长什么样"运行时看不见。
+  assert.match(source, /\.drc-confirm \{/, 'CSS 里要有 .drc-confirm')
+})
 test('确认条：**真执行**一次 —— busy 必须同时禁用两个按钮，两个回调也不许串台', async () => {
   // ⚠️ 这条是 2026-10-01 三方评审点名的两处"假覆盖"之一：上面那条**接线守卫**只做
   //    源码子串匹配（`source.includes('function confirmBar(')`），它钉的是"这段文本
@@ -717,156 +564,44 @@ test('导出：**真执行**一次 —— 新建/更新/未变要数准，失败
   }
 })
 
-test('笔记页按钮：落盘是唯一主按钮，「保存草稿」是暂存出口', () => {
+test('文本契约：客户端路径必须写成字面量（静态契约用例要按字面逐条对宿主路由表）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
-  // v1.58：按钮文案按读者要求改回「保存草稿」（它本来就是"往后的出口"，叫这个名字更直白）。
-  assert.ok(source.includes('保存草稿'), '草稿按钮叫「保存草稿」')
-  // ⚠️ 锚**代码里的字符串字面量**（带引号），不要锚一个词 —— 注释里解释改动时会提到它，
-  // 盯一个词就会被自己的文档绊倒（这个坑本项目踩了四次 ✗）。注释里改成「保存草稿」了。
-  assert.ok(!source.includes("'先记着，以后再写'"), '旧按钮文案不该再出现')
-  assert.ok(!source.includes("onClick: save }, '保存草稿'"), '旧的「保存草稿」文案不该再出现')
-  // ⚠️ 界面上必须把"不动你的笔记文件"说清 —— 读者问的正是这件事。
-  assert.ok(source.includes('不动你的笔记文件'), '草稿按钮的 title 要写明它不碰笔记文件')
-  // 主色按钮只该有一个，且是落盘那个。
-  const primaryCount = (source.match(/className: 'drc-btn drc-btn-primary'/g) ?? []).length
-  assert.ok(primaryCount >= 1, '至少要有一个主按钮')
-  assert.match(
-    source,
-    /className: 'drc-btn drc-btn-primary',\s*\n\s*disabled: busy,\s*\n\s*title: reply\.trim\(\)/,
-    '主按钮应当是「写入笔记」',
-  )
-})
-test('接线守卫：草稿待落盘清单、未选定原文标记、丢弃确认（v1.54）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-  // 待落盘清单：章号 + 最后改动 + 能载回编辑区。
-  assert.ok(source.includes('想先存着、以后再写'), '草稿 tab 要有空态引导（tab 上已带计数，不再另挂标题）')
-  assert.ok(
-    source.includes('formatWhen(draft.updatedAt)'),
-    '草稿清单要显示最后改动时间（字段真实存在：notes.js 的 upsertDraft 写 updatedAt）',
-  )
-  assert.ok(source.includes("'接着写'"), '草稿要能从清单里载回编辑区')
-  assert.ok(source.includes("'未选定章'"), '没选章的草稿也要说清')
-  // 没选原文写的笔记，必须在列表里看得见。
-  assert.ok(source.includes('未选定原文'), '没选原文写的笔记要标明（否则它和"针对某一段"的混在一起）')
-  // 丢弃不可逆 → 走确认条。
-  // ⚠️ v1.61：那个状态从**布尔**（`discardConfirm`）换成了**哪一条**（`discardTarget`）
-  // —— 因为列表里每条草稿都能丢（审计 §四③），确认条必须知道自己在确认哪一行。
-  // 守卫随之改锚点，但它盯的那件事没变：**丢弃必须先要求确认**。
-  assert.ok(source.includes('discardTarget'), '丢弃要有二次确认状态')
-  assert.ok(!source.includes('onClick: discard }'), '丢弃不该再是一键执行')
-  assert.ok(source.includes('setDiscardTarget(draft)'), '丢弃按钮应当只是"要求确认"')
-  // 确认条真正执行的那一步必须是**按那条草稿的 id** 删，而不是删"当前编辑的那条"。
-  assert.match(
-    source,
-    /onClick: \(\) => discardDraft\(discardTarget\)/,
-    '确认后要丢弃的是确认条点名的那一条',
-  )
-})
-test('接线守卫：三个选项卡 + 删除/恢复/彻底删除（v1.57）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-  // ⚠️ v1.62：三颗 tab 由一个 `tabButton(label, count, value)` 建出来（三处只写一遍），
-  // 所以守卫改锚**调用点**（带引号的字面量 = 代码形态），盯的那件事没变：
-  // 三个选项卡都在，而且各用**对的那个计数**。
-  assert.ok(source.includes("tabButton('笔记', notesTotal, 'notes')"), '要有一个「笔记」选项卡，计数用 notesTotal')
-  assert.ok(source.includes("tabButton('草稿', drafts.length, 'drafts')"), '要有一个「草稿」选项卡')
-  assert.ok(source.includes("tabButton('回收站', trashTotal, 'trash')"), '要有一个「回收站」选项卡')
-  // ⚠️ 计数必须用宿主回的 `total`，不是取回来的条数（v1.61，审计 §四②）：
-  // 列表带 `limit`，超过它的那部分取不回来，用条数当计数会**说谎**。
-  assert.ok(!source.includes('${trashNotes.length}）'), '回收站计数不该用取回来的条数（会停在上限上）')
-  assert.ok(source.includes("'删除本条'"), '每条笔记要有删除入口（进回收站、可逆）')
-  assert.ok(source.includes("'恢复'"), '回收站里要能恢复')
-  assert.ok(source.includes("'确认删除'"), '回收站里要能彻底删除')
-  assert.ok(source.includes("'清空回收站'"), '要能清空')
-  // ⚠️ 路径必须是**字面量**：契约用例把客户端路径与宿主路由表逐条对，拼出来的它认不出。
+  // ⚠️ 这三条是**给另一条静态契约用例看的代码形态要求**，不是行为：契约用例把客户端路径
+  //    与宿主路由表**逐条对**，拼出来的它认不出 ⇒ 一旦拼成 `/notes/${note.id}/${kind}`，
+  //    trash / restore 两条路由就**静默失去覆盖**（没人会发现）。
+  //    而行为上拼不拼发出的 URL **一模一样**（`${kind}` = 'restore'），所以硬写一条行为
+  //    断言必然是**永远绿的假守卫** —— 这就是它留在文本钉子这一类的理由（2026-10-03 B 档裁定）。
   assert.ok(source.includes('notes/${note.id}/trash`'), 'trash 路由要写成字面量')
   assert.ok(source.includes('notes/${note.id}/restore`'), 'restore 路由要写成字面量')
   // ⚠️ 断言要收窄到**完整路径**：注释里那句"不拼 kind"的说明本身也包含 `${kind}`，
-  // 写成 `!includes('${kind}')` 会被自己的文档绊倒（踩过一次）。
+  //    写成 `!includes('${kind}')` 会被自己的文档绊倒（踩过一次）。
   assert.ok(!source.includes('/notes/${note.id}/${kind}'), '路径不许拼 kind')
-  // 彻底删除 / 清空是不可逆的 → 必须走确认条。
-  assert.match(source, /purgeTarget[\s\S]{0,500}confirmBar\(/, '彻底删除/清空要走 confirmBar')
-  // ⚠️ **清空必须传 `'all'`，不许把列表里看到的那些 id 传过去**（2026-10-02 三方评审 P2-8）：
-  //    回收站列表一次只取 `TRASH_PAGE_LIMIT`（200）条，传 id = **只清前 200 条**，
-  //    而确认条的文案用的是宿主报的 `total`（"把里面 N 条真正抹掉"）⇒ 说的和做的
-  //    不是一个数，而且"清空"清不干净。宿主本来就支持 `{ all: true }`。
-  assert.ok(
-    source.includes("runPurge(purgeTarget === 'all' ? 'all' : [purgeTarget.id])"),
-    '清空要传 all，不是当前页的 id 列表',
-  )
-  assert.ok(source.includes("target === 'all' ? { all: true } : { ids: target }"), 'runPurge 要把它翻成 { all: true }')
-  assert.ok(!source.includes('trashNotes.map((note) => note.id)'), '不许再把"看得见的那些 id"当成清空')
-  assert.ok(source.includes("mode: 'trash'"), '回收站复用同一个 NoteList（换模式，不写第二套列表）')
-  assert.ok(source.includes('onTrash: trashOne'), '笔记页那条列表要把删除接上去')
-
-  // ---- v1.58：读者对布局的修正 ----
-  // ⚠️ 断言要收窄到**那个标签表达式**：注释里提到「已落盘的笔记（N）」是解释改动，
-  // 盯一个词会被自己的注释绊倒（这个坑本项目踩了三次 ✗）。
-  assert.ok(!source.includes('`已落盘的笔记（${total}）`'), '那行描述（标签表达式）要去掉')
-  assert.ok(source.includes("'丢弃草稿'"), '丢弃草稿在「草稿」tab 里（与「删除本条」同一逻辑）')
-  // tab 行必须在列表区（回收站/笔记那一支之前），不能在编辑区上方。
-  const tabRowAt = source.indexOf('三个分页选项卡**常驻在这里**')
-  const listAt = source.indexOf('三路列表：回收站 / 草稿 / 笔记')
-  assert.ok(tabRowAt > 0 && listAt > tabRowAt, '三个 tab 要常驻在列表区（就在三路列表之前）')
-  assert.ok(source.includes('drc-label\' }, \'回收站\')'), '回收站那行重复的计数标签要去掉')
 })
-
-test('接线守卫：第三方评审第四批的界面修复（2026-10-02）', () => {
+test('样式与模板：对齐与回收站呈现（v1.62）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
-  // ---- P2-10：回收站**取不到 ≠ 空的** ----
-  // 从前 catch 里把列表与计数一起归零，界面就渲染「回收站是空的。」—— 一次读取失败被
-  // 说成"你没删过东西"，把一份可恢复的数据藏起来。这三句各钉一环：状态、赋值、渲染。
-  assert.ok(source.includes('const [trashError, setTrashError] = useState(null)'), '要有一个回收站错误状态')
-  assert.ok(source.includes('setTrashError(describeError(error))'), '取不到时要记下错误文案')
-  assert.ok(source.includes('setTrashError(null)'), '取到时要把错误清掉')
-  assert.match(source, /trashError !== null[\s\S]{0,600}回收站这次没读到/, '取不到时渲染"没读到"，不是"空的"')
-  assert.ok(!/\.catch\(\(\) => \{[\s\S]{0,200}setTrashTotal\(0\)/.test(source), 'catch 里不许再"静默当空"（那条老写法）')
-
-  // ---- P2-11：目录的卷与章节要键盘可达 ----
-  // 这是插件的主导航路径；从前卷标题是带 onClick 的 div、章节是带 onClick 的 li，
-  // 键盘用户展不开卷、也进不了章节。这里按顺序钉：role / tabIndex / 键盘处理 / 状态语义。
-  assert.ok(source.includes("role: 'button',\n                              tabIndex: 0,\n                              'aria-expanded': open,"), '卷标题要能聚焦并播报展开状态')
-  assert.ok(source.includes("'aria-current': chapter.index === current ? 'true' : undefined"), '章节要能播报"当前章"')
-  assert.ok((source.match(/if \(event\.key !== 'Enter' && event\.key !== ' '\) return/g) ?? []).length >= 2, '卷与章节都要处理 Enter / 空格')
-  assert.ok(source.includes('const toggleVolume = () => {'), '鼠标与键盘要共用同一条开关路径')
-
-  // ---- P2-12：笔记表单的 label 要真的绑到控件上 ----
-  for (const id of ['drc-note-excerpt', 'drc-note-thought', 'drc-note-tags', 'drc-note-reply']) {
-    assert.ok(source.includes(`htmlFor: '${id}'`), `label 要用 htmlFor 指向 ${id}`)
-    assert.ok(source.includes(`id: '${id}'`), `${id} 这个 id 要真的写在控件上`)
-  }
-
-  // ---- P3-2：刷新失败必须有人接 ----
-  // `reloadNotesPage` 被三条路**不 await 地**调用；从前没有 catch ⇒ 未处理拒绝 +
-  // 界面停在旧列表却显示"已移入回收站"。
-  // ⚠️ 断言用**切片 + 关键片段**，不用长正则：换行与注释一调整，长正则就假红
-  //    （这一条我自己刚踩过一次）。
-  const reloadAt = source.indexOf('const reloadNotesPage = useCallback')
-  assert.ok(reloadAt > 0, '找不到 reloadNotesPage —— 断言的前提没了')
-  const reloadSlice = source.slice(reloadAt, reloadAt + 1200)
-  assert.ok(reloadSlice.includes('.catch((error)'), 'reloadNotesPage 要有 catch（否则失败是未处理的拒绝）')
-  assert.ok(reloadSlice.includes('不是最新的'), '失败时要如实说"列表可能不是最新的"')
-
-  // ---- P3-3：自动保存失败不许静默 ----
-  assert.ok(source.includes('const [autosaveFailed, setAutosaveFailed] = useState(false)'), '要有"上次自动保存失败"的常驻标记')
-  assert.ok(source.includes('setAutosaveFailed(true)'), '自动保存失败要置起标记')
-  assert.ok(source.includes('setAutosaveFailed(false)'), '存成功要撤掉标记')
-  assert.match(source, /autosaveFailed\s*\n?\s*\? h\(/, '标记要在界面上渲染出来（常驻，不是 toast）')
-
-  // ---- P3-5：增量记录没写成时要明说 ----
-  assert.ok(source.includes('data.archived?.historyWritten === false'), '归档增量没写成时要有一句提示')
-})
-
-test('接线守卫：对齐与回收站呈现（v1.62）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+  // 为什么剩下的这一半转不了（③ 与 ⑥ 已经搬走，见下）：
+  //   · ① ② ⑤ 钉的是 **CSS 规则的文本内容** —— `.drc-tabs` 的 padding、`.drc-note-item`
+  //     的 `padding: 8px 0`、`.drc-btn-on` 不带 `font-weight`、`.drc-tab-num` 的
+  //     `tabular-nums`。这套替身**没有排版引擎**：`document` 是假的、样式表只是被
+  //     `appendChild` 记下来的一段字符串，既算不出 computed style，也量不出"左基线差
+  //     6px"。行为化它们要先有真浏览器（Playwright / jsdom + getComputedStyle），而本
+  //     仓库零依赖、只有 node:test —— 这一档做不到。
+  //     （其中"tab 行挂的类名是 `.drc-tabs`"**是**看得见的：类名就在 props 上。但只钉
+  //      类名、不钉 padding，等于没钉住"对齐"这件事，所以这一条留在原地。）
+  //   · ④ 钉的是**模板形状**（"三路列表不再各自套一层 `.drc-section`"）。它原则上可见
+  //     （类名在 props 上），但行为化的写法只能是"数一数列表区里有几个 section 节点"
+  //     —— 那是另一种更脆的计数钉子（而且 `NoteList` 是 `memo`，命中时会 return null），
+  //     换不来更真的保证，所以不搬。
+  //   · ③（回收站不渲染翻页行）已搬到 client-runtime-review-fixes.test.mjs：真渲染
+  //     `NoteList`，trash / notes 两种模式对比。**这里不要留**。
+  //   · ⑥（`aria-pressed`）也搬走了：它是渲染树上的 prop，生产代码按当前 tab 算
+  //     （`'aria-pressed': tab === value`），所以**能**行为化 —— 见
+  //     client-runtime-review-fixes.test.mjs 的「笔记页：当前选中的 tab 才带
+  //     aria-pressed（点一下要跟着翻）」。**这里不要留 ⑥**，否则同一件事又有了第二份钉子。
 
   // ① tab 行自带内边距。
   // ⚠️ 这条防的是一个**看不见的**回归：`.drc-body` 没有内边距（那一层一向由
@@ -884,9 +619,6 @@ test('接线守卫：对齐与回收站呈现（v1.62）', () => {
   )
   // ② 选中态**不许**加粗：加粗会让被选中的那颗变宽，切换时整行左右抖。
   assert.doesNotMatch(source, /\.drc-btn-on \{[^}]*font-weight/, '.drc-btn-on 不许加粗（会让整行抖）')
-  // ③ 回收站没有分页：NoteList 在 trash 模式下不许渲染那一行（它只会显示两颗禁用按钮
-  //     + 一句与实际不符的「每页 10 条」）。
-  assert.match(source, /mode === 'trash'\s*\n\s*\? null/, "trash 模式下要隐藏翻页行")
   // ④ 三路列表**不再各自套一层** `.drc-section`：`NoteList` 的根自己就是 section，
   //    套两层 = 回收站的内容比另外两个 tab 多缩进 10px（切过去整张列表往右跳）。
   const branches = source.slice(source.indexOf('三路列表：回收站 / 草稿 / 笔记'), source.indexOf('三路列表：回收站 / 草稿 / 笔记') + 1200)
@@ -894,44 +626,7 @@ test('接线守卫：对齐与回收站呈现（v1.62）', () => {
   // ⑤ 计数为 0 时淡一点，且数字用等宽字形（1 与 8 的宽度差会让这行抖）。
   assert.ok(source.includes('drc-tab-num-zero'), '计数为 0 的 tab 要淡一点')
   assert.match(source, /\.drc-tab-num \{[^}]*tabular-nums/, '计数要用等宽数字')
-  // ⑥ 三个 tab 要有读屏能认的"当前选中"（选中态刻意不加粗了，光靠颜色不够）。
-  assert.ok(source.includes("'aria-pressed': tab === value"), 'tab 要带 aria-pressed')
 })
-
-test('接线守卫：编辑区脏了要先问一句、删除后不许弹回第一页（v1.62）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-  // ①「接着写」必须走脏检查。
-  // ⚠️ 这条防的是**丢字**：`applyActive` 无条件替换四个输入框，直接调它会把读者
-  // 刚写、还没保存的内容静默丢掉（而服务端那条草稿还是旧内容，找不回来）。
-  assert.ok(source.includes('onClick: () => loadDraft(draft)'), '「接着写」要走 loadDraft（它会脏检查）')
-  assert.ok(!source.includes('onClick: () => applyActive(draft)'), '「接着写」不该直接 applyActive')
-  assert.match(source, /if \(dirty\) \{\s*\n\s*setSwitchTarget\(draft\)/, '脏的时候要弹确认而不是替换')
-  assert.ok(source.includes('switchTarget'), '要有"正等确认载入哪一条"的状态')
-  // 确认条要给两个出口，且"丢弃并切换"才真的换。
-  assert.match(source, /label: '丢弃并切换'/, '要有一个明确的出口')
-  // ② 脏判断必须覆盖"改过已有草稿"那种情形（`unsaved` 只覆盖"从没保存过的起稿"）。
-  assert.match(source, /const dirty = active === null/, '脏判断要分两种情形')
-  assert.ok(source.includes('active.thought ??'), '要跟当前那条草稿逐框比')
-  // ③ 删除 / 恢复 / 彻底删除不许再走 `refresh()`（它内部 `setCursors([null])` = 弹回第一页）。
-  assert.match(source, /const reloadNotesPage = useCallback/, '要有一个"只重取当前页"的入口')
-  // ⚠️ 切片取 `setTrashed` → `loadPage` 这一段：它正好只装这两个回收站动作。
-  // （第一版切片取到 `runPurge + 900` 字符，把后面的 `moveLocation` 也圈进来了 ——
-  // 那里合法地调 `refresh()`，于是守卫假红。锚点要**收窄到一个可命名的区间**。）
-  const trashAt = source.indexOf('const setTrashed = useCallback')
-  const pagingAt = source.indexOf('const loadPage = useCallback')
-  assert.ok(trashAt > 0 && pagingAt > trashAt, '两个锚点都要在（否则下面的切片是空的，守卫会假绿）')
-  // ⚠️ 断言前**必须剥掉注释**：我自己写在那两处旁边的说明里就有「而不是 `refresh()`」
-  // 这句话 —— 直接对原文 `includes('refresh()')` 会被自己的文档绊倒（本项目**第四次**，
-  // 见 `docs/design-v1-archive.md` 的 v1.58 §346）。反向守卫只盯**代码形态**。
-  const handlers = source.slice(trashAt, pagingAt)
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '')
-  assert.ok(!handlers.includes('refresh()'), '回收站那几个动作不许调 refresh()（会弹回第一页）')
-  assert.ok(handlers.includes('reloadNotesPage()'), '它们该调 reloadNotesPage()')
-})
-
 test('进度百分比：起止与中段都符合预期', async () => {
   const { percentOf } = await internals()
   const chapters = [
@@ -1132,99 +827,6 @@ test('补齐结果转文案：三态各自成句，且**没有成功就不能说
   }
 })
 
-test('★ 补齐结果的接线：发笔记那条路径不再无条件自称「记忆已更新」', () => {
-  // 为什么非要有静态断言：`memoryFillClause` 是纯函数，上面那条测试证明它**会**分三态。
-  // 但把调用处换回硬编码句子，纯函数测试**仍然全绿**——docs/design-v1-archive.md §203 记过这个教训
-  // （函数对而没接线照样是 bug）。这里钉的是**接线**本身。
-  const source = readFileSync(join(ROOT, 'lib/client.js'), 'utf8')
-
-  // 补齐结果必须被留住。原来是一个 `.catch(() => null)` 把结果整个丢掉，
-  // 那正是"无条件声称已更新"的根源。
-  assert.ok(source.includes('const fillRequest = callApi('), '补齐结果没有被留住')
-  assert.ok(
-    !/\.catch\(\(\) => null\),\s*\n\s*boundRequest,/.test(source),
-    '旧的「丢弃补齐结果」写法还在',
-  )
-  assert.ok(source.includes('const memoryClause = memoryFillClause(fill)'), 'memoryFillClause 没有被调用')
-
-  // 两个分支都必须走它。
-  assert.ok(source.includes('${memoryClause}已切到这本书绑定的会话'), 'handoff 分支没有走 memoryClause')
-  assert.ok(source.includes('${memoryClause}摘抄与感想'), 'here-only / 同会话分支没有走 memoryClause')
-
-  // ★ 旧的无条件断言必须彻底消失 —— 它正是这次要修的 bug。
-  assert.ok(!source.includes("'前文记忆已更新。已切到"), '无条件的"记忆已更新"又回来了')
-  assert.ok(!source.includes("'前文记忆已更新，摘抄与感想"), '无条件断言又回来了')
-})
-
-//#endregion
-
-//#region 跳读闸的界面接线（静态断言）
-
-test('跳读闸的界面接线：两个选项真的带上 mode，且主按钮不把点击事件当 mode', () => {
-  // ⚠️ 为什么只能静态断言：组件冒烟渲染用的是"只取初始值、不执行 effect"的 hook
-  // 替身，所以 `gate` 恒为 `null` —— 那一段 JSX **在测试里根本不会被构造**。
-  // 而它恰好是读者**唯一**能回答闸门的地方，接错线就等于这个功能不存在：
-  //   - 两个选项必须把 `'all'` / `'recent'` 传下去，否则"选了等于没选"；
-  //   - 主按钮必须写成箭头函数，且补齐中要变成「停止」（见 `cancelFill`）。
-  //     写成 `onClick: fillBackground` 会把**点击事件对象**当成 `mode` 传进去
-  //     （这是很容易顺手写错的一处）。
-  const source = readFileSync(join(ROOT, 'lib/client.js'), 'utf8')
-
-  assert.match(source, /fillBackground\('all'\)/, '「这些我都读过」必须传 mode=all')
-  // ⚠️ 断言里连**窗口**一起钉住：只传 mode 而忘了窗口，读者在弹窗里选的那个 50/200/300
-  // 就白选了（服务端会回落配置默认），而界面上完全看不出来。
-  assert.match(source, /fillBackground\('recent', gateWindow\)/, '「只记最近 N 章」必须传 mode=recent 与所选窗口')
-  assert.match(
-    source,
-    /onClick: \(\) => \{ if \(filling\) cancelFill\(\); else fillBackground\(\) \}/,
-    '主按钮必须包一层箭头函数，并在补齐中让位给「停止」',
-  )
-  assert.doesNotMatch(
-    source,
-    /onClick: fillBackground[,}\n]/,
-    '直接挂 fillBackground 会把点击事件当成 mode 传给服务端',
-  )
-})
-
-test('跳读闸：边界跟着"读者正在看的那一章"走，而它只在两个主动动作里落盘', () => {
-  // 与上面那条同因：这类接线在组件冒烟渲染里跑不到（effect 与状态更新都不执行），
-  // 只能静态钉住。而它一旦漏了，表现就是读者实测的那一幕 —— 在第 430 章发笔记、
-  // 界面一声不响（进度还停在第 3 章，缺口被算成 null）。
-  const source = readFileSync(join(ROOT, 'lib/client.js'), 'utf8')
-
-  // ① 发笔记：把这条笔记**所属的章**带给服务端。
-  assert.match(source, /Number\.isInteger\(active\?\.chapterIndex\)/, '发笔记必须认笔记所属的章')
-  assert.match(source, /body: atChapter === undefined \? \{ sessionId \} : \{ sessionId, atChapter \}/, '发笔记必须把它带进请求体')
-  // ② 面板补齐：从 props 捕获"正在看的章"，并**真的带进请求体**。
-  // ⚠️ 这里必须断言"被用上"，不能只断言那个声明在 —— 第一版就是只断言了声明，于是
-  // `...at` 漏写都没被发现（面板手动补完全不推边界，而用例照样是绿的）。
-  assert.match(
-    source,
-    /const at = Number\.isInteger\(currentChapter\) \? \{ atChapter: currentChapter \} : \{\}/,
-    '补齐要从 props 捕获"正在看的章"',
-  )
-  assert.match(source, /sessionId, ask: true, \.\.\.carried/, '手动补要同时带 ask 与（首次的）atChapter')
-  assert.match(source, /recentWindow: askedWindow \}\), \.\.\.carried/, '带 mode 的那两次也要带 atChapter')
-  // ⚠️ **请求体必须每次现算**：补齐循环会连着发十几批，而 `atChapter` 的作用是"把边界推到
-  // 我正在看的这一章"。一次算好反复用的话，读者在补齐期间翻章，他的阅读位置会被一批批
-  // **数回去**（与他自己滚动的回写打架）。下面三条一起钉住"只有第一次带它"。
-  assert.match(source, /let firstCall = true/, '请求体要每次现算')
-  assert.match(source, /const carried = firstCall \? at : \{\}/, '只有第一次调用带 atChapter')
-  assert.match(source, /body: bodyFor\(\)/, 'fill 每次调用都要现算请求体')
-  // ③ 面板必须真的拿到那个章号（否则 ② 永远捕到 null）。
-  assert.match(
-    source,
-    /currentChapter: progress\?\.chapterIndex \?\? null/,
-    'CompanionView 必须拿到读者正在看的那一章',
-  )
-  // ④ 只读的那条路也不该按滞后进度算缺口，否则按钮明明该亮却是灰的。
-  assert.match(
-    source,
-    /background\?atChapter=\$\{at\}/,
-    '读背景认识时要带上 atChapter',
-  )
-})
-
 test('补齐文案：自动打底（大缺口只补了开头）必须说清"还要去面板手动补"', async () => {
   // 这一句是读者能不能看懂"发生了什么"的唯一地方：他点了发送，收到的是一句话。
   // 说少了（"已更新"）他会以为前文都补上了；说多了（每次补完都喊"去手动补"）会变成噪音。
@@ -1293,24 +895,11 @@ test('导入说明：有问题才说，没问题闭嘴', async () => {
   assert.deepEqual(importNotes({ warnings: ['', '   ', 42] }), [])
 })
 
-test('接线守卫：目录页真的渲染了「导入说明」（数据早在书架上，缺的只是这一处入口）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-  // ⚠️ 为什么只能静态断言：冒烟渲染用的 hook 替身只取初始值、也不执行点击，
-  //    所以"展开后画出列表"那一支在冒烟里跑不到。而这里真正怕的失效模式是
-  //    「组件写好了但没挂上去」——纯接线问题，切片断言正是对症的工具。
-  const marker = source.indexOf('导入说明排在定长分段那句之上')
-  assert.ok(marker > 0, '找不到 TocView 里挂 ImportNotes 的那一处')
-  const block = source.slice(marker, marker + 300)
-  assert.ok(block.includes('h(ImportNotes, { book })'), '目录页要把当前这本书交给 ImportNotes')
-
-  // 这条功能的**全部**数据都来自 `/library` 的条目（`library.list()` 是 `...book`
-  // 展开的，本来就带 warnings / encoding / encodingConfidence / sourceName）。
-  // 所以它不该新增任何后端面 —— 这一条钉住"零后端"这个说法不被后来的改动推翻。
-  assert.ok(source.includes('function importNotes'), '判定规则要是纯函数（那才是可测的一半）')
-  assert.ok(!source.includes('/import-notes'), '不许为它新增后端路由')
-})
+// ⚠️ 原来这里有一条「接线守卫：目录页真的渲染了「导入说明」」的**源码文本**钉子
+//    （`source.includes('h(ImportNotes, { book })')`），2026-10-03 删掉了 ——
+//    它钉的事已经由 `client-runtime.test.mjs` 的**行为**断言覆盖（真的渲染目录页、
+//    真的点开导入说明、并断言零新增请求）。留着两条就是守卫只增不减。
+//    理由见 `docs/design-history.md` 的 v3.9。
 
 test('状态文件损坏的提示：说清"哪一份、影响什么、坏文件没删"（P2-2 的读者侧那半）', async () => {
   // 宿主把 `/health.quarantined` 报上来（`listQuarantined` 直接读磁盘 ⇒ 重启后仍然说得出事），
@@ -1350,25 +939,11 @@ test('状态文件损坏的提示：说清"哪一份、影响什么、坏文件�
   assert.ok(both.includes('bindings.json.corrupt-a') && both.includes('categories.json.corrupt-b'), '多份要都列出来')
 })
 
-test('接线守卫：书架真的把 `/health.quarantined` 显示出来了（组件写了没挂 = 等于没写）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-  // 冒烟渲染用的 hook 替身只取初始值、不执行异步回调，所以"数据回来之后画出来"
-  // 那一支在冒烟里跑不到 —— 而这里怕的失效模式正是"数据接住了但没画"。
-  const marker = source.indexOf('quarantineNoticeText(health')
-  assert.ok(marker > 0, '⚠️ ShelfView 必须把 health 里那串坏文件交给 quarantineNoticeText（接线断了就退化成零提示）')
-
-  // 而且必须**画在书列表那一支之外**：进度丢光的读者书架往往是满的，
-  // 只画在"空书架"那一支里等于看不见（这正是 `recovered` 那句的老毛病）。
-  assert.ok(
-    source.includes("quarantineText === null ? null : h('div', { className: 'drc-error' }, quarantineText)"),
-    '⚠️ 提示要真的挂进书架渲染树',
-  )
-  const listAt = source.indexOf('// --- 书列表（按分类分组')
-  const noticeAt = source.indexOf("quarantineText === null ? null : h('div'")
-  assert.ok(noticeAt > 0 && listAt > noticeAt, '它必须排在书列表**之上**（不管书架空不空都看得到）')
-})
+// ⚠️ 原来这里有一条「接线守卫：书架真的把 `/health.quarantined` 显示出来了」的
+//    **源码文本**钉子（比 `source.indexOf` 的两个位置），2026-10-03 删掉了 ——
+//    它钉的事已由 `client-runtime.test.mjs` 覆盖：真的渲染书架、真的让 effect 取
+//    `/health`、断言坏文件名出现在**渲染树**里，且排在书列表**之前**。
+//    理由见 `docs/design-history.md` 的 v3.9。
 
 test('收件箱路径：以宿主答复为唯一权威，配置改了要跟着变', async () => {
   const { resolveInboxPath } = await internals()
@@ -1417,48 +992,21 @@ test('导入结果文案：归档了要说，没归档不许说', async () => {
   assert.equal(importOutcomeText({}), '已导入《这本书》· 0 章')
 })
 
-test('接线守卫：收件箱的两个新入口在，且路径不再自己拼', () => {
+test('样式与模板：收件箱三颗动作排成一行（容器不许是 column）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
-  // ⚠️ 这条钉的是一个**真出过的形状**：面板从前写死 `${health.storageDir}\inbox`。
-  // 它当时"碰巧对"，但只要有人让宿主认自己的 `inboxDir` 配置（v1.71 就是这么做的），
-  // 面板立刻指向另一个目录 —— 读者照面板提示放书、然后「扫描」什么也没有。
-  assert.ok(!source.includes('storageDir}\\\\inbox'), '不许再自己拼收件箱路径')
-  assert.ok(source.includes('resolveInboxPath(health)'), '要从宿主的答复里取')
-
-  // 两个入口：复制路径（读者拿去资源管理器粘贴）与打开导入目录（交给系统打开）。
-  assert.ok(source.includes("'复制路径'"), '复制路径按钮要在')
-  assert.ok(source.includes("'打开导入目录'"), '打开目录按钮要在')
-  assert.ok(source.includes('navigator.clipboard.writeText'), '复制要走剪贴板 API')
-  assert.ok(source.includes('OPEN_IN_APP_OPEN_ROUTE'), '打开目录要走宿主的 open-in-app 契约')
-
-  // 归档必须**事先**交代（否则读者回头发现文件不见了，第一反应是插件弄丢了）。
-  assert.ok(source.includes('.imported/'), '界面上要交代归档到哪了')
-
-  // 排布与文案（读者指定）：三颗动作**排成一行**；手动导入那个框要说清自己是干什么的。
+  // 转不了：替身没有布局引擎 —— "这个容器是 row 还是 column"在渲染树上看不出来。
+  // （"三颗属于**同一个容器**"那一半已由 `client-runtime-views.test.mjs` 用渲染树钉住。）
+  //
   // ⚠️ 这条一度被我写成"竖排一列"（读者 2026-09-27 更正：他最初的意思只是把
-  //    「扫描导入目录」提到另外两颗所在的那一行）。竖排会让整块**太占空间**，
-  //    所以两处都钉死：JS 里三颗属于同一个容器、CSS 里那个容器不许是 column。
-  const actionsAt = source.indexOf("className: 'drc-import-actions'")
-  assert.ok(actionsAt > 0, '找不到收件箱动作容器')
-  const actionsBlock = source.slice(actionsAt, actionsAt + 1600)
-  for (const label of ['复制路径', '打开导入目录', '扫描导入目录']) {
-    assert.ok(actionsBlock.includes(`'${label}'`), `${label} 要和另外两颗在同一个容器里（一行）`)
-  }
+  //    「扫描导入目录」提到另外两颗所在的那一行）。竖排会让整块**太占空间**。
   const cssAt = source.indexOf('.drc-import-actions {')
   assert.ok(cssAt > 0, '找不到 .drc-import-actions 的样式规则')
   const cssRule = source.slice(cssAt, source.indexOf('}', cssAt))
   assert.ok(!cssRule.includes('column'), '三颗按钮要在一行，不许竖排（读者明确否掉了竖排）')
-
-  assert.ok(source.includes('手动导入书籍路径：'), '手动导入的输入框要写清这是什么')
-  assert.ok(source.includes("'手动导入'"), '那颗按钮叫「手动导入」')
-  // 说明必须能换行：`.drc-item-sub` 是**单行省略号**样式，用它就会把"文件搬去哪"
-  // 那半句截掉（真机截图里就是「…导入…」）。
-  assert.ok(source.includes("className: 'drc-import-hint'"), '导入说明要用可换行的样式')
 })
-
-test('接线守卫：选中高亮只改背景；阅读区补偿滚动条占位', () => {
+test('样式与模板：选中高亮只改背景；阅读区补偿滚动条占位', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
@@ -1483,7 +1031,7 @@ test('接线守卫：选中高亮只改背景；阅读区补偿滚动条占位',
   )
 })
 
-test('接线守卫：按钮的面保持透明（宿主的 button-*-fill 是"浮起式白按钮"，不是我们这种描边小按钮）', () => {
+test('样式与模板：按钮的面保持透明（宿主的 button-*-fill 是"浮起式白按钮"，不是我们这种描边小按钮）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
@@ -1534,102 +1082,41 @@ test('折叠：名字集合的规整函数对任何垃圾都不抛错，且默�
   assert.notEqual(SHELF_COLLAPSED_KEY, CARDS_EXPANDED_KEY, '两处各存一份，否则会互相覆盖')
 })
 
-test('接线守卫：书架分类与人物卡都是可折叠开关（收起状态跨会话记住）', () => {
+test('样式与模板：书架分类与人物卡的折叠标题仍带着 CSS 认得的类名', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
-  // ---- 书架分类 ----
-  // 标题是**按钮**且带 aria-expanded —— 键盘与读屏用户拿到的必须是同一个可切换控件。
+  // 这两个类名唯一的作用是匹配 CSS 里那两条共用外观规则
+  // （`.drc-cat-toggle, .drc-card-toggle { … }` / `…:hover { … }`，见 lib/client.js 的样式块）。
+  // 运行时替身没有 DOM、也没有样式表 —— 搬过去只能断言"某个 prop 的值是这串字符"，
+  // 反而比源码文本更弱，所以这一半留在原地。
+  //
+  // ⚠️ 这条守卫的**行为那一半**（点一下就收起/展开、名单写进 localStorage、跨会话记住、
+  //    存储读写都抛错时不白屏）已由 `client-runtime-panel-ui.test.mjs` 覆盖；
+  //    「卷的展开状态**不**持久化」也已在那里转成行为断言（展开一卷 ⇒ 持久层一个键都没写，
+  //    且新会话的初始态与第一次逐项相同）。所以这里不再留任何理由注释钉子。
   assert.match(source, /className: 'drc-label drc-cat-toggle'/)
-  assert.match(source, /'aria-expanded': collapsedCategories\.includes\(group\.category\) \? 'false' : 'true'/)
-  // 收起时只留标题行：书目数还在（`（N）`），列表不渲染。
-  assert.match(
-    source,
-    /collapsedCategories\.includes\(group\.category\) \? null : group\.books\.length === 0/,
-    '收起时必须跳过列表，只留标题行',
-  )
-  assert.match(source, /loadNameSet\(SHELF_COLLAPSED_KEY\)/)
-  assert.match(source, /saveNameSet\(SHELF_COLLAPSED_KEY, next\)/)
-
-  // ---- 人物卡：默认**全折叠**（读者定的），所以存的是"展开的" ----
   assert.match(source, /className: 'drc-item-sub drc-card-toggle'/)
-  assert.match(source, /loadNameSet\(CARDS_EXPANDED_KEY\)/)
-  assert.match(source, /saveNameSet\(CARDS_EXPANDED_KEY, next\)/)
-  // ⚠️ 这条钉的是**默认值的方向**：不在展开名单里 = 折叠。
-  assert.match(
-    source,
-    /const folded = !expandedCards\.includes\(cardKey\)/,
-    '人物卡必须默认折叠（存展开名单，空集合 = 全折叠）',
-  )
-  // 收起时只留标题那一行（条数与最新章号仍看得见）；展开时仍只显示最后两条。
-  assert.match(
-    source,
-    /folded \? null : card\.entries\.slice\(-2\)/,
-    '收起时必须跳过条目，只留标题行',
-  )
-  // 键用 `分区/名字`：同名主体在「人物」与「通用概念」里各有一张卡，不该一起收。
-  assert.match(source, /const cardKey = `\$\{card\.section\}\/\$\{card\.name\}`/)
-
-  // 读 localStorage 要吞异常（隐私模式 / 配额下不该炸）。
-  assert.match(source, /globalThis\.localStorage\?\.getItem\(key\)/)
-  // ⚠️ 与目录里的「卷」刻意不同：卷的展开状态**不**持久化。两处理由都要在，
-  //    否则以后会有人把其中一个"统一"掉。
-  assert.match(source, /那是"我正在翻这本书的目录"的过程状态/)
-  assert.match(source, /那是"我平时不想看见哪几类 \/ 哪几个人"的\*\*偏好\*\*/)
 })
-
-test('接线守卫：人物卡是独立小节，且紧挨在「讨论历史」之前', () => {
+test('文本契约：宿主保留 /context 路由（摘掉的是面板入口，不是这个能力）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
-  const sectionAt = (title) => source.indexOf(`h('div', { className: 'drc-item-name' }, '${title}')`)
-  const cards = sectionAt('人物卡')
-  const talk = sectionAt('讨论历史')
-  const background = sectionAt('背景认识（记忆）')
-  const exportAt = sectionAt('导出到笔记库')
-
-  assert.ok(cards > 0, '人物卡必须是一个独立小节的标题')
-  assert.ok(talk > cards, '人物卡要在「讨论历史」之前')
-  assert.ok(cards > background, '它已经不在「背景认识（记忆）」里面了')
-  assert.ok(cards > exportAt, '读者要的是"往下挪"，所以它在导出之后')
-  // 空状态要有话说：这一节现在**总是**出现，没有卡片时不能是一片空白。
-  assert.match(source, /还没有人物卡 —— 补齐前文记忆之后会自动出现。/)
-})
-
-test('接线守卫：那一块预览已经从面板摘掉（但宿主路由保留）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-  // ⚠️ 它依次经历过三次形态：独立小节「AI 视角预览」→ 合并进「书友设定」→ **整块去掉**。
-  //    最后一次是读者 2026-09-27 的决定（只读视图，需要时可以从别处看）。
-  //    ⚠️ 两件事都要钉：**真的摘掉了** + **能力没丢** —— 否则下一次有人会以为是被误删的又加回来。
-  assert.equal(
-    source.includes("h('div', { className: 'drc-item-name' }, 'AI 视角预览')"),
-    false,
-    '「AI 视角预览」不该再是一个小节标题',
-  )
-  assert.equal(
-    source.includes('防剧透层真正会交给模型的全部内容'),
-    false,
-    '面板里不该再有那一块预览',
-  )
-  // ⚠️ 查的是"**不再调用**"而不是"字符串不出现"：注释里正当地提到那条路由（解释这次改动的
-  //    来龙去脉）不该让守卫变红。
-  assert.doesNotMatch(source, /callApi\([^)]*\/context/, '客户端不该再调用 /context 那条路由')
   // 能力仍在宿主侧：路由保留（测试与"需要时自己看"都用它）。
+  // ⚠️ 这一条查的是 `lib/index.js` 的**路由表**，不是面板行为 —— 运行时渲染测试够不着它，
+  //    所以必须留在源码文本上（"预览没画出来"与"面板不再调 /context"两半已由
+  //    `client-runtime-panel-ui.test.mjs` 覆盖）。
+  //
+  // ⚠️ 这里**不**再钉"源码里不许出现预览块"（旧守卫那两条 `source.includes(...) === false`）：
+  //    运行时断言钉的是"**没画出来**"，源码断言钉的是"**代码里根本没有**"——后者多出来的
+  //    那一小块盲区（加回来但挂在某个新 state 后面、渲染不到）属于**死代码**，`lib/` 另有
+  //    死代码扫描兜着；而为它留一条文本钉子正是这轮要治的东西。
   const server = readFileSync(join(here, '..', 'lib', 'index.js'), 'utf8')
   assert.ok(
     server.includes("pattern: '/books/:bookId/context'"),
     '宿主路由必须保留 —— 摘掉的是面板入口，不是这个能力',
   )
-  // ⚠️ **那次摘除的副作用**：`/context` 的响应里还带着「该压缩了」的信号（`backgroundWeight`），
-  //    客户端不再调它之后，提醒就无声消失了 —— 压缩变成纯手动、没人提醒（真实后果：读者某本书的
-  //    背景认识涨到 47 KB）。所以信号改挂 `/background`，而**面板必须真的读它**。
-  assert.match(source, /compaction\?\.over === true/, '面板必须读宿主回的 compaction 信号')
-  assert.ok(source.includes('这份背景认识已经偏胖'), '该压缩时要给读者一句人话')
 })
-
-test('接线守卫：提示条是浮动 toast（观感对标 lumina，长文不自动消失）', () => {
+test('样式与模板：提示条是浮动 toast（观感对标 lumina，长文不自动消失）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
@@ -1666,7 +1153,7 @@ test('接线守卫：提示条是浮动 toast（观感对标 lumina，长文不�
   assert.match(source, /--drc-ok: var\(--dsw-alias-state-success-primary/, '成功色要从宿主取，别写死')
 })
 
-test('接线守卫：界面文字默认不可选中（正文等例外）、边框粗细只有两种用途', () => {
+test('样式与模板：界面文字默认不可选中（正文等例外）、边框粗细只有两种用途', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
@@ -1708,7 +1195,7 @@ test('接线守卫：界面文字默认不可选中（正文等例外）、边�
   assert.deepEqual(offenders, [], '盒子边框只许 1px；2px/3px 只留给 border-left 强调竖条')
 })
 
-test('样式模板：注释里不许出现反引号（它会把 CSS 的模板字符串提前结束）', () => {
+test('样式与模板：注释里不许出现反引号（它会把 CSS 的模板字符串提前结束）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
@@ -2039,22 +1526,14 @@ test('分页选项卡：容器是 .drc-tabs、选中项带 aria-pressed、计数
   assert.ok(numbers.length >= 1, '计数为 0 的 tab 要带 drc-tab-num-zero')
 })
 
-test('笔记翻页：上一页/下一页真的接上了（静态接线）', () => {
-  // 读者要的是**真翻页**：一次只显示一页（10 条），能往回翻；不是"一路点加载、
-  // 把列表摊成一长条"。这条链路（点下一页 → 压栈 → 重取一页 → 替换列表）在组件
-  // 冒烟渲染里执行不到（react 替身不跑状态机与 effect），所以只能静态钉住。
-  const source = readFileSync(join(ROOT, 'lib/client.js'), 'utf8')
-
-  assert.match(source, /const \[cursors, setCursors\] = useState\(\[null\]\)/, '游标要存成栈')
-  assert.match(source, /const next = \[\.\.\.cursors, pageNext\]/, '下一页 = 压栈')
-  assert.match(source, /const next = cursors\.slice\(0, -1\)/, '上一页 = 弹栈')
-  assert.match(source, /onPrev: goPrevPage/, '两个回调要接进 NoteList')
-  assert.match(source, /onNext: goNextPage/, '两个回调要接进 NoteList')
-  // 反向守卫：追加式分页已经被换掉了，这两样不该再回来。
-  assert.ok(!source.includes('mergeNotesPage'), '追加式分页的合并函数应当已经删除')
-  assert.ok(!source.includes('onLoadMore'), '「加载更旧」的回调不该再出现')
-  assert.ok(!source.includes('loadingMore'), '追加式的忙标志不该再出现')
-})
+// ⚠️ 原来这里有一条「笔记翻页：上一页/下一页真的接上了（静态接线）」的**源码文本**
+//    钉子（钉 `const [cursors, setCursors] = useState([null])`、`[...cursors, pageNext]`、
+//    `onNext: goNextPage` 这几句），2026-10-03 删掉了 —— 它钉的事已由
+//    `client-runtime.test.mjs` 覆盖：真的进笔记页、真的点底部那颗「更旧 →」按钮，
+//    断言第二次 `/notes` 请求带上了宿主给的 `nextCursor`，且列表是**替换**不是追加。
+//    ⚠️ 那三条"追加式分页不许回来"的反向断言也随之删除；它们的**行为**内核
+//    （翻页 = 替换）由新用例的"不该还看得见上一页那条"承担。
+//    理由见 `docs/design-history.md` 的 v3.9。
 
 //#endregion
 
@@ -2246,16 +1725,11 @@ test('讨论时间线：面板记录走的是 POST /discussions，且带 bookId'
   assert.deepEqual(JSON.parse(calls[0].options.body), { kind: 'sent', chapterIndex: 2, thought: '一句' })
 })
 
-test('面板：书友设定与讨论历史都在 CompanionView 里真的渲染出来', async () => {
-  // 纯静态检查——但拦的是真实的失效模式：区块写了却忘了放进返回的树里，
-  // 组件冒烟测试也发现不了（它只保证"能跑通"，不保证"有这一块"）。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  for (const label of ['书友设定（你写给 AI 的）', '讨论历史', '压缩背景认识', '人物卡']) {
-    assert.ok(source.includes(label), `面板里缺少「${label}」`)
-  }
-  // 设定必须能存能读，走的是 /persona 这条路由。
-  assert.match(source, /\/books\/\$\{book\.bookId\}\/persona/)
-})
+// ⚠️ 原来这里有一条「面板：书友设定与讨论历史都在 CompanionView 里真的渲染出来」的
+//    **源码文本**钉子（`source.includes('讨论历史')` 等四个词 + 一条 persona 路由正则），
+//    2026-10-03 删掉了 —— 它钉的事已由 `client-runtime.test.mjs` 覆盖：真的渲染面板、
+//    断言四个区块都出现在**渲染树**里，且设定真的从 `/books/<id>/persona` 取回来。
+//    理由见 `docs/design-history.md` 的 v3.9。
 
 //#endregion
 
@@ -2419,34 +1893,6 @@ test('交接：空内容与非对象一律不收，不会塞一条空消息', as
   }
 })
 
-test('交接：清空是显式的，而且必须在写进输入框**之后**', async () => {
-  // 顺序反了的话，`setDraft` 一旦抛错（宿主接口换形状），文字就从接力区消失了、
-  // 而输入框里也没有 —— 两头空，读者看到的是"失败"但实际是"弄丢了"。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  const setDraftAt = source.indexOf("inputActions.setDraft(existing === '' ? decision.text")
-  // ⚠️ 必须从 `setDraftAt` 往后找：前面 `drop` 分支里还有一次清空（那次是对的，
-  //    因为它清的是"过期作废"的棒子，跟这里"兑现后清"是两件事）。
-  const commitAt = source.indexOf('commitDraftHandoff(draftHandoffs, sessionId)', setDraftAt)
-  assert.ok(setDraftAt > 0, '必须把文字写进输入框')
-  assert.ok(commitAt > setDraftAt, '兑现后的清空必须出现在写进输入框之后')
-})
-
-test('交接：棒子装在模块级 Map 里，不能退回组件状态', async () => {
-  // 这是本轮修复的**根因**：右侧栏页签的 scope 是 session，切会话会卸载本面板。
-  // 交接棒一旦放在 `useState` 里，跳转这个动作本身就会把它带走 ——
-  // 读者看到的正是"跳过去了，但输入框是空的"。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(source, /^ {4}const draftHandoffs = new Map\(\)/m, '接力区必须是模块级 Map')
-  assert.match(source, /^ {4}const sessionViews = new Map\(\)/m, '视图记忆必须是模块级 Map')
-  assert.match(
-    source,
-    /takeDraftHandoff\(draftHandoffs, sessionId, Date\.now\(\)\)/,
-    '面板必须从模块级接力区取，而不是从自己的状态取',
-  )
-  assert.doesNotMatch(source, /const \[draftHandoff, setDraftHandoff\] = useState/, '交接棒不许放回组件状态')
-  assert.doesNotMatch(source, /setDraftHandoff\(/, 'setDraftHandoff 应当已被彻底移除')
-})
-
 test('视图记忆：跳过去之后要能回到原来那本书，而不是又看到书架', async () => {
   const { rememberSessionView, recallSessionView, sessionViews, resolveRestoreView } = await internals()
   sessionViews.clear()
@@ -2531,15 +1977,14 @@ test('视图记忆：目录没到之前不许消费待还原项', async () => {
   assert.equal(resolveRestoreStep(pending, book, null), 'stay')
 })
 
-test('视图记忆：每个进笔记页的入口都要记下来源', () => {
-  // 发送到会话发生在笔记页上，那一刻 `view` 恒为 `'notes'`，而它被
-  // `resolveRestoreView` 刻意映射到目录。来源只能在**进入笔记页那一刻**记下来，
-  // 所以每个真正的入口旁边都必须有一次来源赋值。
-  //
-  // 这里数"入口数 == 记账处数"，而不是"恰好有 N 处"：将来多一个入口却忘了记账，
-  // 行为会静默退化成"跳过去看到目录"，而测试照样是绿的 —— 那正是本轮真机反馈
-  // 的形状。`^\s*` 是为了不把注释里提到的同名调用算成入口。
+test('文本契约：视图记忆：进笔记页的入口数必须等于记账处数', () => {
   const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
+
+  // 为什么这部分转不了：这是一条**计数不变式**，防的是"将来多出一个进笔记页的入口
+  // 却忘了记账"——运行时用例只能把**已知的三个**入口各走一遍
+  // （见 test/client-runtime-nav.test.mjs 的前三条），拦不住第四个入口。
+  // `epochs == entries` 那半同理；而且 test/helpers/hooks-runtime.mjs 不实现 `key`，
+  // "换编辑世代 ⇒ 重挂 ⇒ 重读初值"在这个运行时里根本观察不到。
   const entries = (source.match(/^\s*setView\('notes'\)/gm) ?? []).length
   const origins = (source.match(/noteOriginRef\.current = '(?:reader|toc)'/g) ?? []).length
   assert.ok(entries > 0, '找不到进笔记页的入口 —— 断言的锚点已经失效了')
@@ -2548,100 +1993,26 @@ test('视图记忆：每个进笔记页的入口都要记下来源', () => {
     entries,
     `进笔记页的入口有 ${entries} 个，但只有 ${origins} 处记了来源：跳过去会落错页`,
   )
-
-  // 同一个入口还必须换一次**编辑世代**（`NotesView` 的 `key`）。`NotesView` 只把
-  // props 读进 `useState` 的初值，所以"换一份编辑内容"只能靠重挂表达；漏掉这一处，
-  // 新起稿可能落到已经挂载的那个编辑框上，而它不会重读初值。
   const epochs = (source.match(/setNoteEpoch\(\(epoch\) => epoch \+ 1\)/g) ?? []).length
   assert.equal(
     epochs,
     entries,
     `进笔记页的入口有 ${entries} 个，但只有 ${epochs} 处换了编辑世代（NotesView 的 key 不会变）`,
   )
-  assert.match(source, /noteOriginRef\.current = 'reader'/, '从正文选区起稿时来源要记成正文')
-  assert.match(source, /noteOriginRef\.current = 'toc'/, '从目录进笔记页时来源要记成目录')
-
-  // 记下来还不够，交接时必须**真的用它** —— 但用的方式不是把它当落点。
-  //
-  // ⚠️ 这里曾经把「来源」同时当作交接的落点，结果是读者在笔记页点发送、跳过去
-  // 却直接被弹回正文：正在写的那条笔记从眼前消失了，还得重新进来一次（真机反馈）。
-  // 「发送」保留**此刻这一层**，「返回」才回到**来源**，两者必须分开。
-  assert.match(
-    source,
-    /view: payload\?\.view \?\? 'notes'/,
-    '交接保留的必须是此刻这一层（笔记页），而不是进笔记页时的来源',
-  )
-  assert.doesNotMatch(
-    source,
-    /view: payload\?\.view \?\? noteOriginRef\.current/,
-    '把来源当成交接落点，就会在发送时把读者弹回正文',
-  )
-  assert.match(
-    source,
-    /origin: payload\?\.origin \?\? noteOriginRef\.current \?\? 'reader'/,
-    '来源要单独交出去：目标会话自己没进过笔记页，它的「返回」只能靠这份种子',
-  )
-  assert.match(
-    source,
-    /draft: payload\?\.draft \?\? activeDraft/,
-    '草稿要一起交出去，否则目标会话的笔记页是个空编辑框',
-  )
-
-  // 返回按钮用的才是来源。写死 `'toc'` 的话，从正文选区起的草稿在记完笔记点返回时
-  // 会掉到目录（真机反馈）—— 摘抄是从正文里选的，返回却回不到正文。
-  assert.match(
-    source,
-    /onBack: \(\) => setView\(noteOriginRef\.current \?\? 'toc'\)/,
-    '笔记页的返回按钮必须回到进入笔记页时的来源，而不是固定回目录',
-  )
-  // 交接过来的面板也要装上来源，否则那边的「返回」只能猜。
-  assert.match(
-    source,
-    /const noteOriginRef = useRef\(typeof boot\?\.origin === 'string'/,
-    '从记忆里还原过来的面板要把来源装进 noteOriginRef',
-  )
-
-  // 接线：三态要**分开处理**。还原 effect 是组件内逻辑，替身渲染不到，所以这里
-  // 静态钉住它确实按 `resolveRestoreStep` 的结果分派 —— `stay` 必须原样返回
-  // （留着待办），只有 `apply` 才消费。少了这一条，把 `stay` 当 `apply` 处理
-  // 就会在目录到位之前落点，而那正是本轮修掉的那个 bug。
-  assert.match(
-    source,
-    /const step = resolveRestoreStep\(restoreRef\.current, book, catalog\)/,
-    '还原 effect 必须走 resolveRestoreStep',
-  )
-  assert.match(source, /if \(step === 'drop'\)/, '读者换了书要清掉待办')
-  assert.match(source, /if \(step !== 'apply'\) return/, '非 apply 必须原样返回，不许消费待办')
 })
-
-test('视图记忆：还原那一帧的接线（组件内逻辑，渲染不出来）', () => {
-  // 跨会话交接之后，目标会话面板的**第一帧**长这样：记忆里有"书 + 笔记页 + 草稿 +
-  // 来源"，面板要照着它把四个状态一次摆好。少摆一个，读者看到的就是白屏、空编辑框
-  // 或者被弹回正文。
-  //
-  // ⚠️ 这一段在单测里**跑不出来**：本文件顶部的 reactStub 把 `useState` 写成
-  // `(initial) => [initial, () => {}]` —— **不调用**初始值函数。所以上面那几条纯函数
-  // 用例保证的是"规则对"，这一条保证的是"接线对"，两者缺一不可。
+test('文本契约：视图记忆：还原那一帧的接线（组件内逻辑，渲染不出来）', () => {
   const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  const wiring = [
-    [
-      /const \[boot\] = useState\(\(\) => recallSessionView\(sessionViews, sessionId\)/,
-      '面板要从模块级记忆起步',
-    ],
-    [
-      /useState\(\(\) => resolveRestoreView\(boot\?\.view, boot\?\.draft\)\)/,
-      '初始落点要连着草稿一起算，否则笔记页还原不出来',
-    ],
-    [/useState\(\(\) => boot\?\.draft \?\? null\)/, '笔记页的草稿要从记忆里装回来'],
-    [
-      /bookId: book\.bookId, view: resolveRestoreView\(boot\?\.view, boot\?\.draft\)/,
-      '待落点项也要连着草稿一起算',
-    ],
-    [/draft: view === 'notes' \? activeDraft : null/, '只有笔记页才把草稿记进记忆'],
-  ]
-  for (const [pattern, why] of wiring) assert.match(source, pattern, why)
-})
 
+  // 为什么这一条转不了：`restoreRef` 算的是**同一个表达式**，而落点 effect 会在同一次
+  // 提交里把视图纠正回去 —— 这一处只决定"第一帧闪一下"，hooks 运行时**不暴露中间帧**。
+  // 可观察的那一处（`restoreRef` 里的同一个表达式）已由 test/client-runtime-nav.test.mjs
+  // 的「记忆里是『笔记页但没有草稿』」覆盖：去掉 `boot?.draft` ⇒ 那条用例红。
+  assert.match(
+    source,
+    /useState\(\(\) => resolveRestoreView\(boot\?\.view, boot\?\.draft\)\)/,
+    '初始落点要连着草稿一起算，否则笔记页还原不出来',
+  )
+})
 test('视图记忆：没有 `bookId` 的垃圾不进记忆', async () => {
   const { rememberSessionView, recallSessionView, sessionViews } = await internals()
   sessionViews.clear()
@@ -2692,34 +2063,12 @@ test('自动开页签：宿主没挂载侧边栏时抛错必须被吞掉，不�
   assert.equal(attempts.length, 5, '每次重试都要真的试一次（前几次本来就预期会抛）')
 })
 
-test('发到会话：交接带的是**原文**，不拼源会话输入框里的字', async () => {
-  // 合并「输入框里已有的字」必须发生在**兑现那一刻**——那边读到的
-  // `existingDraft` 才是目标会话自己的。在这里拼，等于把源会话里打了一半的
-  // 话搬到目标会话去，而那是读者没打算发出去的东西。
+test('文本契约：正文页的每个 prop 都得从面板传下去（漏传是静默失效）', () => {
   const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(
-    source,
-    /requestHandoff\(\{ sessionId: plan\.targetSessionId, text, book, draft: active \}\)/,
-    '交接必须带原始 text；拼上 existingDraft 会把源会话的草稿搬进目标会话',
-  )
-  // 草稿要带本地的 `active`（回应框的改动只活在它里面），不是面板传下来的
-  // `activeDraft` —— 后者在读者改过回应框之后就是旧的了。
-  assert.doesNotMatch(
-    source,
-    /requestHandoff\(\{ sessionId: plan\.targetSessionId, text, book, draft: activeDraft \}\)/,
-    '交接的草稿要取本地 state，否则读者刚改的回应不会跟过去',
-  )
-})
 
-test('发到会话：正文的「笔记」按钮必须真的接上 —— 漏传 prop 会静默失效', () => {
-  // `ReaderView` 顶部那颗「笔记」按钮一直在调 `onOpenNotes`，而 `ReaderPanel`
-  // 曾经**忘了把这个 prop 传下去**：按钮点了毫无反应，读者不先在正文里选中一段
-  // 就进不了笔记页（真机反馈）。
-  //
-  // 这一类洞渲染层查不出来 —— 组件少收一个 prop 只是**安静地什么都不做**。
-  // 所以这里不止钉那一个名字，而是把整条规律钉住：`ReaderView` 解构出来的每一个
-  // prop，`ReaderPanel` 渲染它时都必须给。将来再加 prop 忘了传，会在这里报红。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
+  // 行为用例只钉得住"今天枚举出来的那几条路"（点击 / 选中 / 滚动）。这条静态比对的价值
+  // 在**将来新增的 prop** 上 —— 加进 ReaderView 的解构却忘了从 ReaderPanel 传，
+  // 渲染层不会报错，只会安静地什么都不做（真机反馈过的那颗「笔记」按钮就是它）。
   const decl = /function ReaderView\(props\) \{\s*\n\s*const \{ ([^}]+) \} = props/.exec(source)
   assert.ok(decl !== null, '找不到 ReaderView 的解构 —— 断言的锚点已经失效了')
   const call = /return h\(ReaderView, \{([\s\S]*?)\n {6}\}\)/ .exec(source)
@@ -2736,48 +2085,7 @@ test('发到会话：正文的「笔记」按钮必须真的接上 —— 漏传
     [],
     `ReaderView 需要这些 prop，但 ReaderPanel 没传：${missing.join('、')}（漏传是静默失效）`,
   )
-  // 顺带钉住"从正文进笔记页"这一条路径本身：来源要记成正文。
-  assert.match(
-    source,
-    /onOpenNotes: \(\) => \{\s*\n\s*noteOriginRef\.current = 'reader'/,
-    '正文的「笔记」按钮要把来源记成正文，否则返回与发送的落点都会错',
-  )
 })
-
-test('发到会话：交接必须一并交出 `book`，否则跳过去只会看到书架', async () => {
-  // 目标会话的面板可能是**本页面里第一次**打开，它的视图记忆是空的。
-  // 不把书一起交出去，读者跳过去看到的是书架，还得再点一次那本书 ——
-  // 那正是他反馈的问题。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(source, /rememberSessionView\(sessionViews, payload\?\.sessionId, \{/, '交接时要给目标会话播下视图种子')
-  assert.match(source, /book: payload\?\.book \?\? book/, '种子里的书来自当前面板')
-})
-
-test('发到会话：跳得过去 + 有人接住，两个条件缺一不可', async () => {
-  // 只判断"跳得过去"是不够的：若交接通道缺失，`requestHandoff(...)` 会抛
-  // TypeError，被同一段 try/catch 吞成一句"放入输入框失败"——而文字已经没了。
-  // 那时候读者看到的是"失败"，实际上更糟：跳也跳了、字也没了。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(
-    source,
-    /canOpenSession: typeof openSession === 'function' && typeof requestHandoff === 'function'/,
-    '两个条件都要：跳得过去，且跳过去之后有人接住这段文字',
-  )
-})
-
-test('交接：`wait` 必须在清空之前返回，否则文字永久丢失', async () => {
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  const waitAt = source.indexOf("if (decision.action === 'wait') return")
-  const commitAt = source.indexOf('commitDraftHandoff(draftHandoffs, sessionId)')
-  assert.ok(waitAt > 0, '必须留 `wait` 的提前返回')
-  assert.ok(commitAt > 0, '必须清空已处理的交接')
-  assert.ok(
-    waitAt < commitAt,
-    '清空必须在 wait 判断之后——顺序反了就会把"还没跳过去"的交接当成处理完而丢掉',
-  )
-})
-
-
 test('章节标题：客户端与宿主的规则在整数章号上必须逐字相同', async () => {
   const { chapterHeading } = await internals()
   const titles = ['第16章 带子', '卷二 风起', '雪夜', '', undefined, '第十三回 见故人', '尾声']
@@ -2802,24 +2110,6 @@ test('章节标题：没有章序号时原样回标题', async () => {
   assert.equal(chapterHeading(null, '卷一'), '卷一')
   assert.equal(chapterHeading(null, undefined), '')
 })
-
-test('发到会话：守卫只看摘抄与感想，不会被新加的章节行骗过', async () => {
-  // `sendToSession` 是组件内的回调，替身测不到它的分支。这里静态钉住那条守卫
-  // 的形态——它原本是 `text === ''`，而在开头加上章节行之后，那个判断会让
-  // "只有章节、没有摘抄感想"的输入**通过**（因为章节行本身就是非空文本）。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(
-    source,
-    /if \(excerpt\.trim\(\) === '' && thought\.trim\(\) === ''\)/,
-    '守卫必须只看摘抄与感想，否则加了章节行之后它会静默失效',
-  )
-  assert.ok(
-    source.includes('lines.push(`**${heading}**`)'),
-    '发到会话时开头必须写明章节',
-  )
-})
-
-//#region 竞态守卫
 
 test('竞态守卫：只有最新一次请求算数', async () => {
   const { createLatestGuard } = await internals()
@@ -2861,70 +2151,7 @@ test('竞态守卫：每个资源各用各的，互不作废', async () => {
   assert.equal(discussions.isCurrent(inflight), true, '另一个资源的请求不该作废这一个')
 })
 
-test('竞态守卫：每个按书加载的资源各自装了守卫', () => {
-  // 守卫是组件内的 hook，替身测不到"切书时真的丢弃了响应"。这里静态钉住
-  // **接线**：每个加载器都必须先取票、回来先验票。少接一个，那条路径就又
-  // 回到"谁后回来谁说了算"。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-
-  /**
-   * 每个受守卫的资源 → 它必须有几处**真正的提前返回**。
-   *
-   * ⚠️ 这里刻意**按守卫逐个计数**，而不是数全文件的总数。上一版数的是总数
-   * （5×2 = 10），结果这一轮新增两个受守卫的资源就把它撞红了。断言本身没有
-   * 写错，是它**问错了问题**：要钉住的性质是"每个加载器都验了票"，而不是
-   * "全文件恰好有 10 处验票"。总数会随无关改动漂移，逐个计数才是不变量。
-   *
-   * 也不数 `.isCurrent(ticket)` 出现过几次：那样会被 `if (false && ...)` 这种
-   * 阉割骗过去——实测踩到过，断言绿着而那一处守卫已经完全不生效。数"真正的
-   * 提前返回"才作数。
-   */
-  const guards = [
-    // 五个按书加载的资源：then 与 catch 都要验票，否则失败会被记到另一本书的界面上。
-    ['bindingGuard', 2],
-    ['backgroundGuard', 2],
-    ['personaGuard', 2],
-    ['discussionsGuard', 2],
-    // ⚠️ `previewGuard` 已经**删掉**了，别再加回来：2026-09-27 预览整块从面板去掉，
-    //    那个资源连同它的守卫一起消失。守卫表也要跟着缩短 —— 否则它会要求一个
-    //    已经不存在的资源装作有守卫（这一条正是它刚才报的错）。
-    // 打开书：目录与进度一起拉的 Promise.all，成功与失败两条路径。
-    ['openGuard', 2],
-    // ⚠️ 2026-10-01 三方评审查出：`NotesView` 那几条加载器**一个守卫都没有** ——
-    //    切书 / 翻页 / 连点两次删除时，先发的请求可能后回来，把旧数据写进已经
-    //    翻篇的界面。下面三条是**补接**的，不是新资源。
-    // 笔记列表：`reloadNotesPage`（成功 + **失败**）/ `refreshNotes` / `loadPage`
-    // 三处写同一份状态。
-    // ⚠️ 2026-10-02 第四批：`reloadNotesPage` 补了 catch（刷新失败要如实说一句，
-    //    见 P3-2），而那一条**也要验票** —— 否则迟到的失败会被记到另一本书的界面上。
-    //    所以是 4 → 5：这不是"多了一处"，是同一处从"只有成功路径"变成"两条路径"。
-    ['notesGuard', 5],
-    // 草稿列表：只在成功路径写状态，所以只有一处提前返回。
-    ['draftsGuard', 1],
-    // 回收站：成功与失败两条路径都要验票 —— 失败分支会"清零"，
-    // 不验票就等于把另一本书的计数清成 0。
-    ['trashGuard', 2],
-    // ⚠️ `captureGuard` 已经**删掉**了，别再加回来：起稿现在是同步的（`captureNote`
-    //    不落服务端，见「起稿：进笔记页不写服务端」那条用例），没有响应会晚到。
-  ]
-
-  for (const [guard, expected] of guards) {
-    assert.ok(
-      new RegExp(`const ${guard} = useLatestGuard\\(\\)`).test(source),
-      `${guard} 没有声明 —— 那个资源又会被迟到响应覆盖`,
-    )
-    const returns = (source.match(new RegExp(`if \\(!${guard}\\.isCurrent\\(ticket\\)\\) return`, 'g')) ?? []).length
-    assert.equal(returns, expected, `${guard} 的提前返回数目不对（期望 ${expected}）`)
-  }
-
-  // 反向断言：源码里声明了几个守卫，就必须都登记在上面这张表里。
-  // 这一条挡住"新加了一个受守卫的资源、却忘了登记"—— 否则新资源的守卫
-  // 永远不受这个测试保护，而测试看起来还是绿的。
-  const declared = (source.match(/const \w+Guard = useLatestGuard\(\)/g) ?? []).length
-  assert.equal(declared, guards.length, '有守卫没有被登记进 guards 表')
-})
-
-test('阅读排版：章节标题必须跟着正文字号缩放，不能写死 px', () => {
+test('样式与模板：章节标题必须跟着正文字号缩放，不能写死 px', () => {
   // 正文字号是**用户可调**的（13–30px，见 DEFAULT_FONT_PREFS）。标题写死 15px
   // 的话：默认 16px 时标题就已经比正文小，把字号调到 20px 之后标题会明显
   // "塌"进正文里，章节与段落的层级彻底消失。
@@ -2964,19 +2191,12 @@ test('位置恢复：空正文绝不能记账（否则整条进度链路失效�
   assert.equal(shouldRestorePosition('另一本:1', key, true), true, '换书换章要重新恢复')
 })
 
-test('位置恢复：effect 必须依赖 paragraphs，且不许退回一次性旗标', () => {
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  const effect = /\/\/ --- 落回上次的位置 ---([\s\S]*?)\}, \[([^\]]*)\]\)/.exec(source)
-  assert.ok(effect !== null, '找不到恢复位置的 effect')
-
-  assert.match(effect[2], /paragraphs/, '依赖里没有 paragraphs —— 正文到达时 effect 不重跑，位置永不恢复')
-  assert.match(effect[2], /initialOffset/, '依赖里没有 initialOffset —— 换章落回原处就失效了')
-  assert.doesNotMatch(
-    effect[1],
-    /if \(chapter === null \|\| restoredRef\.current\)/,
-    '又用回了"一次性布尔旗标"的写法',
-  )
-})
+// ⚠️ 原来这里有一条「位置恢复：effect 必须依赖 paragraphs，且不许退回一次性旗标」的
+//    源码正则钉子（正则抠出依赖数组再查 `paragraphs` / `initialOffset`），2026-10-03
+//    删掉了 —— 它钉的事已由 `client-runtime.test.mjs` **直接观察**：正文没到时不许落位、
+//    正文到达那一趟必须落位一次、依赖没变不重复落位、换章要重新落位。
+//    （退回一次性布尔旗标就会卡在第一步：挂载时置旗，数据到达时被挡 ⇒ 永不恢复。）
+//    理由见 `docs/design-history.md` 的 v3.9。
 
 test('目录筛选：章号按**1 起**匹配，与界面上显示的一致', async () => {
   // 界面上显示的是 `String(chapter.index + 1).padStart(3, '0')`。筛选如果按
@@ -3010,103 +2230,6 @@ test('目录筛选：章号按**1 起**匹配，与界面上显示的一致', as
   assert.deepEqual(filterChapters([null, 'x', 3], 'x'), [], '坏条目要被跳过')
 })
 
-test('目录筛选：短书不显示筛选条（阈值存在且合理）', async () => {
-  const { TOC_FILTER_MIN } = await internals()
-  assert.equal(Number.isInteger(TOC_FILTER_MIN), true)
-  assert.ok(TOC_FILTER_MIN >= 20 && TOC_FILTER_MIN <= 200, `阈值不合理：${TOC_FILTER_MIN}`)
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(
-    source,
-    /chapters\.length < TOC_FILTER_MIN/,
-    '筛选条没按阈值隐藏 —— 短书会平白多出一条输入框',
-  )
-})
-
-test('记笔记：NotesView 要有会变的 key，而且**保存时不能变**', () => {
-  // ⚠️ 这条来自一个两份外部审查报告都没抓到的 bug，测试替身也渲染不出来（它的
-  // useState 不做状态更新）—— 它是**靠读时序发现的**：`NotesView` 把 props 只读进
-  // `useState` 的初值，而它恰好是在内容还没到位的那一刻挂载的，于是摘抄框是空的。
-  //
-  // 修法是给它一个会变的 key。但 key **用哪个量**很讲究：上一版用的是
-  // `activeDraft?.draftId`，那在"起稿是一发 POST、id 由响应带回"的前提下成立。
-  // 起稿同步化之后它反而有害 —— 面板会在**保存成功**时从 `onDraftChange` 拿到真实
-  // 的 draftId，那一换 key 就把 `NotesView` 重挂掉，"草稿已保存。"连同编辑框里还
-  // 没回写的中间态一起消失。所以改成只在"换编辑目标"时 +1 的世代号。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  const render = /return h\(NotesView, \{([\s\S]*?)\}\)/.exec(source)
-  assert.ok(render !== null, '找不到 NotesView 的渲染点')
-  assert.match(render[1], /key: noteEpoch/, 'NotesView 缺 key —— 换编辑目标时不会重挂，摘抄框会是空的')
-  assert.doesNotMatch(
-    render[1],
-    /key: activeDraft/,
-    'key 又挂在 activeDraft 上了 —— 保存成功会让它变，通知与编辑框中间态会被重挂吃掉',
-  )
-})
-
-//#region 起稿不落盘（v0.14.4）
-
-test('起稿：进笔记页不写服务端，草稿栏只装读者亲手存过的东西', () => {
-  // ⚠️ 钉的是一个**行为方向**，不是实现细节。
-  //
-  // 从前 `captureNote` 会立刻 POST 一条草稿，于是"我只是用光标选了一段、点进来
-  // 看一眼"也会在「未落盘的草稿」里留下一条 —— 而草稿栏是"我存过哪些"的清单，
-  // 不该被浏览动作污染（真机反馈）。现在的规则和正文顶部那颗「笔记」按钮一致：
-  // 进笔记页只把选区装进编辑框，服务端的记录等「保存草稿」才产生。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  const body = /const captureNote = useCallback\(\(payload\) => \{([\s\S]*?)\n      \}, \[/.exec(source)
-  assert.ok(body !== null, '找不到 captureNote 的函数体 —— 断言的锚点已经失效了')
-  assert.doesNotMatch(body[1], /callApi\(/, '起稿落服务端了：光进一趟笔记页就会在草稿栏里多出一条')
-  assert.match(body[1], /setActiveDraft\(\{/, '起稿要把选区装进编辑框')
-  assert.doesNotMatch(body[1], /draftId\s*:/, '起稿不该带 draftId —— 带了就等于宣称它已经落盘')
-
-  // "写了，但还没保存"必须让读者看得见：起稿不再自动落盘之后，这句话是唯一的
-  // 解释，没有它，"我明明写了"与"草稿栏里没有"就只剩下困惑。
-  assert.match(
-    source,
-    /尚未保存 · 点「保存草稿」才会进草稿栏/,
-    '「写了但还没保存」这个状态没有露出来 —— 读者会以为草稿栏里的东西丢了',
-  )
-})
-
-test('起稿：没有 draftId 时不许替读者建记录', () => {
-  // `persist` 是"回应框改动后自动存一次"。它从前总有个 draftId 可用；现在若在
-  // 没有 id 时"顺手新建"，就等于**绕过「保存草稿」**把东西塞进草稿栏 —— 而那正是
-  // 这一版要修掉的行为。它是组件内逻辑、替身渲染不到，所以静态钉住这个短路。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(
-    source,
-    /if \(draftId === undefined \|\| draftId === null\) return Promise\.resolve\(null\)/,
-    'persist 在没有 draftId 时没有短路 —— 它会替读者建一条草稿',
-  )
-  assert.doesNotMatch(
-    source,
-    /drafts\/\$\{active\.draftId\}\/commit/,
-    '写入笔记又拿 active.draftId 去提交了 —— 未保存的起稿没有 id，会提交 undefined',
-  )
-  assert.match(
-    source,
-    /const draftId = data\?\.draft\?\.draftId/,
-    '写入笔记必须用 POST 响应里的 id（未保存的起稿要靠那一次 POST 才有 id）',
-  )
-
-  // 章节要跟着**第一次** POST 一起送：从前它由"在正文里起稿"那一次带上去，现在
-  // 第一次 POST 发生在「保存草稿」与「写入笔记」，不带就等于把草稿挂到**没有出处**
-  // 的位置上。
-  //
-  // ⚠️ 这里**逐个函数**取 body 来断言，不数全文件的总数：上报给面板的那份 payload
-  // 里也有同一个表达式，数总数会把"上报带了"误当成"两个 POST 都带了"（实测踩到过：
-  // 总数是 3，而这条断言当时写的是 2）。
-  for (const name of ['save', 'commit']) {
-    const fn = new RegExp(`const ${name} = useCallback\\([\\s\\S]*?\\n      \\}, \\[`).exec(source)
-    assert.ok(fn !== null, `找不到 ${name} 的函数体 —— 断言的锚点已经失效了`)
-    assert.match(
-      fn[0],
-      /chapterIndex: Number\.isInteger\(active\?\.chapterIndex\) \? active\.chapterIndex : null/,
-      `${name} 写草稿时没带章节 —— 草稿会挂到没有出处的位置上`,
-    )
-  }
-})
-
 test('会话记忆：未保存的起稿也要能记（它没有 draftId）', async () => {
   // 记忆层从前按"`draftId` 必须是字符串"来卡。起稿同步化之后，"服务端还没有这条
   // 记录"是常态，那样一刀切会把**整条会话记忆**丢掉 —— 表现是切个页签回来摘抄与
@@ -3125,27 +2248,3 @@ test('会话记忆：未保存的起稿也要能记（它没有 draftId）', asy
   assert.equal(recallSessionView(sessionViews, 'session-abc'), undefined)
 })
 
-test('起稿：编辑内容要回报给面板，且面板那个回调必须是稳定引用', () => {
-  // 未保存的内容只活在内存里（`captureNote` 不落盘），所以"切页签/切会话不丢"
-  // 全靠这条上报线。⚠️ 面板那个回调若是内联箭头函数，每次渲染换一个新引用，
-  // `NotesView` 的上报 effect 就会"上报 → setState → 重渲染 → 再上报"地死循环。
-  const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(
-    source,
-    /const handleDraftChange = useCallback\(\(draft\) => \{\n\s*setActiveDraft\(draft\)\n\s*\}, \[\]\)/,
-    'handleDraftChange 必须是空依赖的 useCallback —— 内联箭头会让上报 effect 死循环',
-  )
-  assert.match(source, /onDraftChange: handleDraftChange,/, 'NotesView 没有拿到上报回调')
-  assert.match(source, /if \(typeof onDraftChange !== 'function'\) return/, '上报端没有对回调做存在性检查')
-  // draftId 一律归一成"字符串或 null"：下游全靠它分派，`undefined` 漏进会话记忆
-  // 会让"未保存"这个状态在某些路径上判不出来。
-  assert.match(
-    source,
-    /draftId: typeof active\?\.draftId === 'string' \? active\.draftId : null/,
-    '上报的 draftId 没有归一化 —— undefined 会漏到会话记忆里',
-  )
-})
-
-//#endregion
-
-//#endregion

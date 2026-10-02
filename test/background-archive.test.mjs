@@ -68,7 +68,42 @@ test('冷归档：只搬"整条都在窗口之外"的条目，没章号的条目
   )
 })
 
+test('冷归档：「时间与分线」也要有天花板——支线单元整条出窗口才搬，主线永不搬', () => {
+  // ⚠️ 2026-10-03 体检发现：这一节从前是**唯一**既不注入、又不压缩、又不冷归档的节
+  //    （`planArchive` 原先只遍历注入族，见它的循环）⇒ 只增不减、**无上限**。
+  //    它是读者要看的"骨架 + 支线"，所以给它加天花板时：**主线**（骨架）永远保留，
+  //    **支线单元**整条出窗口就搬进冷档案（仍是读者族，仍可看、可导出）。
+  const doc = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..200 -->',
+    '# 《某书》· 背景认识',
+    '',
+    '## 时间与分线',
+    '### 主线',
+    '- `第1-30章` 从入门到接掌。',
+    '### 【支线】押镖 · 第45-72章',
+    '- `第45章` 起：接下镖局的活。',
+    '- `第72章` 收：镖银到手，与镖头结下交情。',
+    '### 【支线】南疆 · 第150-190章',
+    '- `第150章` 起：南下查一桩旧案。',
+    '- `第190章` 收：旧案了结。',
+  ].join('\n'))
+
+  const plan = planArchive(doc, 100)
+  const units = plan.items.filter((item) => item.section === '时间与分线').map((item) => item.entity)
+  assert.deepEqual(units, ['【支线】押镖 · 第45-72章'], '只有整条出窗口的支线搬；窗口内的南疆不搬')
+  assert.equal(units.includes('主线'), false, '主线是骨架、永远保留 —— 它是这一节存在的理由')
+
+  // ⚠️ 单元是**整体**：搬一半会把一条支线拆成两半（读者看到的是"这件事说了一半"）
+  const partial = planArchive(doc, 60)
+  assert.equal(
+    partial.items.some((item) => item.section === '时间与分线'),
+    false,
+    '第45-72章那条在窗口 60 处只老了一半 ⇒ 整条都不搬',
+  )
+})
+
 test('冷归档：搬进「冷档案」时保留来源与主体，原文一字不改', () => {
+
   const doc = parseBackground(SAMPLE)
   const { doc: next, moved } = applyArchive(doc, 30)
   assert.ok(moved > 0)
