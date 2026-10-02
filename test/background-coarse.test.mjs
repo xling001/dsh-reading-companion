@@ -143,25 +143,23 @@ test('分层：说明句里的数量与实际被粗化的主体数一致（别�
   assert.equal(Number(matched[1]), claimed, '说明句里的数字必须与实际一致')
 })
 
-test('分层：它只用**剩余空间**，不做置换——有些预算点上一点忙都帮不上，而那是对的', () => {
-  // 这一条是被一次真实现象逼出来的：同一个夹具、预算 500 时 `coarsened` 是**空的**，
-  // 而预算 700 时粗化了 3 个。原因不是 bug，是这一级的设计边界：
-  //
-  //   完整单元 ~111 字、粗粒度单元 ~33 字。预算 500 时，完整单元先把额度用到只剩
-  //   17 字——**装不下任何一个粗粒度单元**（33 > 17），于是它一个都补不进去。
-  //
-  // 而它**刻意不做置换**（"丢掉一个完整单元，换三个粗粒度单元"在这里能多表示
-  //   2 个主体，覆盖率更高）。理由：置换会把"本来能完整显示的主体"降级，破坏
-  //   "kept 一个都不动"这条最强的性质——而这条性质正是它敢默认开的原因。
-  //   宁可在某些预算点上少帮一点忙，也不要让一次降级改动去动已经显示好的内容。
+test('分层（3.0 ③c）：置换 —— 丢最旧的完整单元换被丢主体的锚，"整块消失"清零', () => {
+  // 这一条的**决策在 3.0 反转了**：v1.25 曾刻意不做置换（"丢一个完整单元换三个粗粒度
+  // 单元"能多表示 2 个主体，但会破坏"kept 一个都不动"）；3.0 之后锚有了语义（人物状态 /
+  // 在线折叠都拿它当"认识的骨架"），主体被**整块丢掉**的代价（AI 不知道他存在）比降级高
+  // ⇒ 反转为：**只在交换严格更优（多救回主体）时置换**，且救不回就不动。
   const doc = fatDoc({ characters: 8, linesEach: 4 })
   const tight = renderBackgroundForPrompt(doc, { budgetChars: 500, progressIndex: 60 })
   const roomy = renderBackgroundForPrompt(doc, { budgetChars: 700, progressIndex: 60 })
 
-  assert.deepEqual(tight.coarsened, [], '剩余空间不足时，粗粒度一级帮不上忙')
-  assert.ok(tight.trimmed.length > 0, '于是该丢的还是丢——如实报告')
-  assert.ok(roomy.coarsened.length > 0, '空间够时它才补位')
+  assert.ok(tight.coarsened.length > 0, '预算 500：旧设计一个都不粗化；3.0 用置换把被丢主体救成锚')
+  // ⚠️ 置换的验收口径：**dropped 清零**（每个主体至少露一个锚），说明句的数量一致。
+  assert.equal(tight.trimmed.length, 0, '不该再有"整块被丢"的记录 —— 都降成锚了')
+  const claimed = tight.coarsened.reduce((sum, entry) => sum + entry.coarsened, 0)
+  const matched = /本节有 (\d+) 个主体只列出最近一条记载/.exec(tight.text)
+  assert.ok(matched !== null, `应当出现说明句：${tight.text.slice(0, 200)}`)
+  assert.equal(Number(matched[1]), claimed, '说明句里的数字必须与实际一致')
 
-  // 不论哪种情况，都没出现"粗化了却还声称丢了更多"这种自相矛盾。
-  for (const entry of tight.trimmed) assert.ok(entry.dropped >= 0)
+  // 空间够时照旧整段展开（旧性质不回退）。
+  assert.ok(roomy.coarsened.length > 0, '空间够时它才补位')
 })

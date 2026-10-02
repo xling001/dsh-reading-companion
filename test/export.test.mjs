@@ -13,7 +13,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -23,6 +23,7 @@ import {
   parseExportMarker,
   renderExportMarker,
   runExport,
+  writeAutoBackup,
 } from '../lib/host/export.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -294,3 +295,54 @@ test('导出拒绝：连消歧名都被外来文件占着时，报错而不是�
     rmSync(out, { recursive: true, force: true })
   }
 })
+
+//#region 自动备份（3.0）：命名 / 计数 / 不重复 / 没配就不写
+
+test('自动备份：命名 = 书名-第N次自动(归档|压缩).md；计数按既有文件名走，删一个也不乱', () => {
+  const dir = makeDir('auto-backup')
+  const root = dir
+  // ① 第 1 次
+  const a = writeAutoBackup({ root, title: '01小说-魔女霓裳', bookId: 'b1', markdown: '一' })
+  assert.ok(a !== null)
+  assert.match(a.path.replace(/\\/g, '/'), /自动备份\/01小说-魔女霓裳-第1次自动备份\.md$/)
+  // ② 内容变了 ⇒ 第 2 次；③ 归档与压缩共用一个池子（后缀只有一个：自动备份）
+  const b = writeAutoBackup({ root, title: '01小说-魔女霓裳', bookId: 'b1', markdown: '一 二' })
+  assert.match(b.path.replace(/\\/g, '/'), /第2次自动备份\.md$/)
+  const c = writeAutoBackup({ root, title: '01小说-魔女霓裳', bookId: 'b1', markdown: '一 二 三' })
+  assert.match(c.path.replace(/\\/g, '/'), /第3次自动备份\.md$/)
+  // ④ 计数来自**现存文件名**的最大值 + 1 ⇒ 删掉一份也不会让序号复活/错位
+  const backupDir = join(dir, '陪读导出_01小说-魔女霓裳', '自动备份')
+  assert.deepEqual(
+    readdirSync(backupDir),
+    [
+      '01小说-魔女霓裳-第1次自动备份.md',
+      '01小说-魔女霓裳-第2次自动备份.md',
+      '01小说-魔女霓裳-第3次自动备份.md',
+    ].sort(),
+    `命名要规整：${readdirSync(backupDir).join(' / ')}`,
+  )
+})
+
+test('自动备份：内容一字不差 ⇒ 不新增（备份之间不重复）', () => {
+  const dir = makeDir('auto-backup-dedup')
+  const root = dir
+  const first = writeAutoBackup({ root, title: '书甲', bookId: 'b2', markdown: '同内容' })
+  const again = writeAutoBackup({ root, title: '书甲', bookId: 'b2', markdown: '同内容' })
+  assert.equal(again.path, first.path, '复用已有备份')
+  assert.equal(again.reused, true)
+  const filesOf = () => readdirSync(join(dir, '陪读导出_书甲', '自动备份'))
+  assert.equal(filesOf().length, 1, `不增文件：${filesOf().join(' / ')}`)
+})
+
+test('自动备份：导出根没配 ⇒ 不写（宁可少做，不猜路径）；书名非法字符要被清洗', () => {
+  const dir = makeDir('auto-backup-empty')
+  assert.equal(writeAutoBackup({ root: '', title: '书', bookId: 'b', markdown: 'x' }), null)
+  // 书名来自用户导入的文件名（可能带 Windows 非法字符），必须与导出路由同一把尺子；
+  // 空书名不会失败 —— sanitizeFolderName 有兜底名，那与导出路由的行为一致。
+  const weird = writeAutoBackup({ root: dir, title: '坏:名?字', bookId: 'b3', markdown: 'x' })
+  assert.ok(weird !== null, '非法书名不该让写入失败')
+  assert.ok(!/[:?]/.test(weird.path.split('陪读导出_')[1] ?? ''), `清洗后不该有非法字符：${weird.path}`)
+})
+
+//#endregion
+

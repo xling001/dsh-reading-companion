@@ -33,12 +33,12 @@ import {
   FILL_INCREMENTAL_SECTIONS,
 } from '../lib/host/background.js'
 import { buildMemoryPrompt } from '../lib/host/memory.js'
-import { buildCompactPrompt } from '../lib/host/compact.js'
+import { buildCompactPrompt, COMPRESSIBLE_SECTIONS } from '../lib/host/compact.js'
 
-test('分区：六个小节，顺序与权重严格同序', () => {
+test('分区：五个小节（「前文脉络」已并入「时间与分线」），顺序与权重严格同序', () => {
   assert.deepEqual(
     [...BACKGROUND_INJECTED_SECTIONS],
-    ['人物关系', '人物', '世界观', '前文脉络', '文风（只写一次）', '通用概念'],
+    ['人物关系', '人物', '世界观', '文风（只写一次）', '通用概念'],
   )
 
   // 每个分区都必须有权重，否则分配时会静默拿到 0（= 永远被整节丢弃）。
@@ -70,11 +70,11 @@ test('分区：六个小节，顺序与权重严格同序', () => {
   const sum = Object.values(BACKGROUND_SECTION_WEIGHTS).reduce((a, b) => a + b, 0)
   assert.ok(Math.abs(sum - 1) < 1e-9, `权重和应当是 1，实际 ${sum}`)
 
-  // ★ 加「通用概念」**不能**改变原五节的相对份额。分配只用比值（注水法的除数
-  // 是"还饿着的那些节的权重和"），所以"原比例 15:13:9:7:6 乘同一个因子"是
-  // 唯一不改变小说行为的加法。把它写成断言，是因为这条性质**看不见**——
-  // 一旦有人为了凑出漂亮的小数把原五节各减一点，小说那边的分配就悄悄变了。
-  const original = [15, 13, 9, 7, 6]
+  // ★ 「前文脉络」并入后（3.0），**未并入者的相对份额保持不变**。原比例 15:13:9:7:6
+  // 去掉脉络的 7 ⇒ 剩五节 15:13:9:6:5、分母 48 —— 它是"减少一节不改变其余分配"的唯一减法。
+  // 把它写成断言，是因为这条性质**看不见**——一旦有人为了凑出漂亮的小数把原五节各减一点，
+  // 小说那边的分配就悄悄变了。
+  const original = [15, 13, 9, 6, 5]
   const factor = BACKGROUND_SECTION_WEIGHTS['人物关系'] / original[0]
   original.forEach((part, index) => {
     assert.ok(
@@ -84,7 +84,7 @@ test('分区：六个小节，顺序与权重严格同序', () => {
   })
   // 兜底那节的份额必须**小于**原表里最小的那一节（它是最后一名）。
   assert.ok(
-    BACKGROUND_SECTION_WEIGHTS['通用概念'] < BACKGROUND_SECTION_WEIGHTS['前文脉络'],
+    BACKGROUND_SECTION_WEIGHTS['通用概念'] < BACKGROUND_SECTION_WEIGHTS['文风（只写一次）'],
     '「通用概念」是兜底，权重必须最低',
   )
 })
@@ -124,7 +124,7 @@ function measureDoc(perSection = 20) {
     '## 人物', ...cast, '',
     '## 世界观', ...entries('设定'), '',
     '## 文风', ...entries('风格'), '',
-    '## 前文脉络', ...entries('脉络'), '',
+    // （3.0：「前文脉络」不再注入 —— 夹具随注入族走五节。）
     '## 通用概念', ...entries('概念'),
   ].join('\n'))
 }
@@ -143,15 +143,15 @@ test('分区：权重真的被执行（不是死代码）', () => {
   const base = { budgetChars: 900, progressIndex: 24 }
   const normal = renderBackgroundForPrompt(doc, base).allowances
 
-  // 把权重整个倒过来：「前文脉络」变成最重的那一节。
+  // 把权重整个倒过来：「通用概念」变成最重的那一节。
   const flipped = renderBackgroundForPrompt(doc, {
     ...base,
-    weights: { 人物关系: 0.12, 人物: 0.12, 世界观: 0.12, '文风（只写一次）': 0.12, 前文脉络: 0.52 },
+    weights: { 人物关系: 0.12, 人物: 0.12, 世界观: 0.12, '文风（只写一次）': 0.12, 通用概念: 0.52 },
   }).allowances
 
   assert.ok(
-    flipped['前文脉络'] > normal['前文脉络'],
-    `把「前文脉络」的权重拉到 0.52 之后它必须变大：${flipped['前文脉络']} vs ${normal['前文脉络']}`,
+    flipped['通用概念'] > normal['通用概念'],
+    `把「通用概念」的权重拉到 0.52 之后它必须变大：${flipped['通用概念']} vs ${normal['通用概念']}`,
   )
   assert.ok(
     flipped['人物关系'] < normal['人物关系'],
@@ -304,18 +304,19 @@ test('倒退过滤：区间章号按**最早**那端判，`第5-9章` 在读到�
   // （取区间的**后**端），`第5-9章` 会被判成"9 > 7，超前的"——而这条的起点是
   // 第 5 章，读者早就读过了。单章标记（`第7章`）下 `matched[1]` 与
   // `matched[2] ?? matched[1]` 恰好相等，所以这个错**不会**被单章用例抓到。
+  //（夹具用「世界观」——3.0 起「前文脉络」不再是注入节，但**区间判据是通用的**。）
   const doc = parseBackground([
-    '## 前文脉络',
-    '- `第5-9章` 一段跨章的总述',
+    '## 世界观',
+    '- `第5-9章` 一段跨章的设定记载',
   ].join('\n'))
 
   const kept = renderBackgroundForPrompt(doc, { budgetChars: 6000, progressIndex: 6, maxChapter: 7 })
-  assert.match(kept.text, /一段跨章的总述/, '区间起点 5 ≤ 7，必须保留')
+  assert.match(kept.text, /一段跨章的设定记载/, '区间起点 5 ≤ 7，必须保留')
   assert.deepEqual(kept.filtered, [])
 
   const dropped = renderBackgroundForPrompt(doc, { budgetChars: 6000, progressIndex: 3, maxChapter: 4 })
-  assert.doesNotMatch(dropped.text, /一段跨章的总述/, '区间起点 5 > 4，必须丢掉')
-  assert.deepEqual(dropped.filtered, [{ name: '前文脉络', dropped: 1 }])
+  assert.doesNotMatch(dropped.text, /一段跨章的设定记载/, '区间起点 5 > 4，必须丢掉')
+  assert.deepEqual(dropped.filtered, [{ name: '世界观', dropped: 1 }])
 })
 
 test('倒退提示：covered.last 超过当前进度时明说"超出的已过滤"', () => {
@@ -411,8 +412,15 @@ test('读者族：这一节对模型不可见，但重写与合并都不许丢�
   assert.ok(fill.includes('【未闭合】'), '影响暂时看不出来时的标记必须明说')
   assert.ok(fill.includes('【伏笔】'), '伏笔用标记写在条目里（不再单独成节）')
   assert.ok(fill.includes('只写"注意到了什么"'), '伏笔只许写观察')
-  const compact = buildCompactPrompt({ bookTitle: '测试书', background: '（材料）' })
-  assert.ok(compact.includes('## 时间与分线'), '压缩要保留这一节')
+  // ④b（3.0 分节作业）：压缩 = **逐节调用** ⇒ 读者族根本**不过模型**（结构性保留）。
+  //    保证打在作业清单上：它不在「要过模型」的名单里 —— 比在提示词里提一句"要保留"更硬。
+  assert.ok(!COMPRESSIBLE_SECTIONS.includes('时间与分线'), '分节作业不含读者族 ⇒ 时间与分线永不过模型')
+  assert.ok(
+    !COMPRESSIBLE_SECTIONS.includes('冷档案')
+    && !COMPRESSIBLE_SECTIONS.includes('文本类型')
+    && !COMPRESSIBLE_SECTIONS.includes('人物状态'),
+    '冷档案 / 写法指南针 / 状态行同样永不过模型',
+  )
 })
 
 test('面板信号：文件里"进度之后"的条目要数得准（面板看得见、模型看不见，得说出来）', () => {
@@ -443,9 +451,10 @@ test('面板信号：文件里"进度之后"的条目要数得准（面板看得
   assert.deepEqual(countBeyondProgress(doc, null), { entries: 0, maxChapter: null }, '不判定时回零')
 })
 
-test('后续批次注入：只给四节 + 通用概念（非空才给）+ 时间与分线只给单元名', () => {
-  // ⚠️ 2026-10-01 读者看完实际提示词后定的（"除开第一次，后续只需要注入人物、人物关系、
-  //    前文脉络、世界观这四项"）。逐节理由见 `renderExistingForFill` 的说明。
+test('后续批次注入：只给三节 + 通用概念（非空才给）+ 时间与分线只给单元名', () => {
+  // ⚠️ 2026-10-01 读者定的口径（"除开第一次，后续只需要注入人物、人物关系、世界观"
+  // —— 当时还有「前文脉络」；**3.0 它已并入「时间与分线」** ⇒ 现在就是三节 + 概念兜底）。
+  // 逐节理由见 `renderExistingForFill` 的说明。
   const doc = parseBackground([
     '<!-- drc-background: schema=1 covered=1..20 -->',
     '## 人物关系',
@@ -456,7 +465,7 @@ test('后续批次注入：只给四节 + 通用概念（非空才给）+ 时间
     '- `第2章` 身份未明',
     '## 世界观',
     '- `第1章` 三面环水',
-    '## 文风',
+    '## 文风（只写一次）',
     '- `第1章` 爱用短句',
     '## 前文脉络',
     '- `第1-5章` 初遇',
@@ -472,12 +481,15 @@ test('后续批次注入：只给四节 + 通用概念（非空才给）+ 时间
 
   const text = renderExistingForFill(doc)
 
-  for (const name of ['人物关系', '人物', '世界观', '前文脉络']) {
+  for (const name of ['人物关系', '人物', '世界观']) {
     assert.match(text, new RegExp(`^## ${name}$`, 'm'), `${name} 必须给（新条目要接在已有主体名下）`)
   }
   assert.match(text, /^### 甲 × 乙$/m, '分组节的布局要与注入侧同源（### 主体 + 名下条目）')
   assert.match(text, /雨夜决裂/)
 
+  // ⚠️ 3.0：「前文脉络」已并入「时间与分线」⇒ **不再注入**（它本来就只在文件里保留）
+  assert.doesNotMatch(text, /^## 前文脉络$/m, '脉络并入后不再给（省预算；旧内容在文件里照旧）')
+  assert.doesNotMatch(text, /初遇/)
   assert.doesNotMatch(text, /^## 文风（只写一次）$/m, '文风不给：它是稳定特征，后续批次不需要重读')
   assert.doesNotMatch(text, /爱用短句/, '文风的条目更不该给')
   assert.doesNotMatch(text, /^## 已取代$/m, '归档不给：抑制名单已经兜着，塞进来只会给"复活旧说法"的机会')
@@ -523,3 +535,95 @@ test('元判断：「文本类型」排在最前、永远整条注入，而且�
   assert.match(filled, /^## 文本类型$/m, '补齐的"已有认识"里也要带上它')
   assert.ok(filled.startsWith('## 文本类型'), '在"已有认识"里它排第一（后面的节按它来写）')
 })
+
+test('倒退过滤：段落式人物条目必须**按句**过滤（段落式带来的材料层风险，2026-10-02）', () => {
+  // ⚠️ 「人物」改成"一段小传"之后，一段里会有多个章号。若按"行首章号"整段放行，
+  //    开头写 `第3章`、中间写着 `第50章` 的段落会**整段**进到"正在读第 20 章"那轮提示词里
+  //    —— 那是**材料层漏后文**（防剧透的根本在材料层，不在守则）。
+  const doc = parseBackground([
+    '## 人物',
+    '### 甲',
+    '- `第3章` 出身寒门。`第31章` 拜入师门。`第50章` 立下大愿。',
+  ].join('\n'))
+
+  const early = renderBackgroundForPrompt(doc, { budgetChars: 9000, maxChapter: 20 })
+  assert.match(early.text, /出身寒门/, '已读的那句要给')
+  assert.doesNotMatch(early.text, /拜入师门/, '第31章那句不许进提示词')
+  assert.doesNotMatch(early.text, /立下大愿/, '第50章那句也不许进提示词')
+  assert.equal(
+    early.filtered.find((item) => item.name === '人物')?.sentences,
+    2,
+    '丢了几句必须报出来（"截了就要说"）',
+  )
+
+  const later = renderBackgroundForPrompt(doc, { budgetChars: 9000, maxChapter: 60 })
+  assert.match(later.text, /立下大愿/, '读到了就整段都在')
+
+  // 同一句里引到的别的章号**不算**新的一句 —— 否则会把一句切成残句。
+  const inline = parseBackground(['## 人物', '### 乙', '- `第3章` 出场（`第50章` 才又提到）。'].join('\n'))
+  const inlineOut = renderBackgroundForPrompt(inline, { budgetChars: 9000, maxChapter: 20 })
+  assert.match(inlineOut.text, /出场/, '同一句里的括注不受影响')
+})
+
+//#region 在线折叠（3.0 ②c）：离场人物折叠成锚（注入视图；文件不动）
+
+const OFFLINE_DOC = [
+  '<!-- drc-background: schema=1 covered=1..100 -->',
+  '# 《书》· 背景认识',
+  '',
+  '## 人物状态',
+  '### 甲',
+  '- `第20章` 现状：离开渡口，去向不明。',
+  '### 乙',
+  '- `第90章` 现状：在城中被围。',
+  '',
+  '## 人物',
+  '### 甲',
+  '- `第5章` 渡口少年。',
+  '- `第20章` 离开了渡口。',
+  '### 乙',
+  '- `第90章` 被围城中。',
+].join('\n')
+
+test('在线折叠：离场人物（最后提及距今 ≥ 阈值）⇒ 注入只留锚，状态行不进提示词', () => {
+  const doc = parseBackground(OFFLINE_DOC)
+  const r = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 89, personOfflineChapters: 60 })
+  // 甲：读第 90 章 − 最后提及第 20 章 = 70 ≥ 60 ⇒ 折叠
+  const pessoa段 = r.text.slice(r.text.indexOf('### 人物' + '\n'), r.text.indexOf('（另有'))
+  assert.ok(pessoa段.includes('离开了渡口'), '锚（最新一条）必须在')
+  assert.ok(!pessoa段.includes('渡口少年'), '更早的条目不随行（折叠成一条）')
+  assert.match(r.text, /另有 1 位人物已\*\*离场\*\*/, '折叠要说出来（可解释）')
+  const 状态段 = r.text.slice(r.text.indexOf('### 人物状态') + 1, r.text.indexOf('### 人物状态') + 400)
+  assert.ok(!状态段.includes('离开渡口，去向不明'), '离场人物的状态行不注入（过期现状误导）')
+  // 乙：90 − 90 = 0 < 60 ⇒ 正常展开
+  assert.ok(r.text.includes('被围城中'), '在线人物的一切照旧')
+})
+
+test('在线折叠：人物**再出场**（有新条目）⇒ 自动展开；文件视图（renderBackground）从头到尾不动', () => {
+  const doc = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..100 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物状态',
+    '### 甲',
+    '- `第95章` 现状：回来了，落脚在码头。',
+    '',
+    '## 人物',
+    '### 甲',
+    '- `第5章` 渡口少年。',
+    '- `第95章` 重新出现。',
+  ].join('\n'))
+  const r = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 96, personOfflineChapters: 60 })
+  assert.ok(r.text.includes('渡口少年'), 'lastSeen 更新 ⇒ 整卡展开')
+  assert.ok(r.text.includes('回来了，落脚在码头'), '状态行跟着回来')
+  const 复述 = renderBackground(doc, '《书》')
+  assert.match(复述, /渡口少年/, '文件视图不受折叠影响 —— 折叠只动注入')
+})
+
+test('在线折叠：设 0（或不给 progressIndex）⇒ 关闭；与旧行为逐字一致', () => {
+  const doc = parseBackground(OFFLINE_DOC)
+  const off = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 89, personOfflineChapters: 0 })
+  assert.ok(off.text.includes('渡口少年'), '0 = 不折叠')
+  assert.ok(!off.text.includes('已**离场**'), '折叠的说明也不该出现')
+})
+

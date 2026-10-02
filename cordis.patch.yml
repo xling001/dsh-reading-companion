@@ -141,6 +141,15 @@
           headAllowanceChars: 1500
           backgroundBudgetChars: 9000
           backgroundCoarseDegrade: true
+          # Cold archiving (3.0): before each fill, entries entirely older than this
+          # many chapters are MOVED (code only, no model call) into the 冷档案 section.
+          # They stay in the file but never enter the prompt. 0 disables it.
+          archiveWindowChapters: 120
+          # Online folding (3.0 ②c): a character not mentioned for this many chapters
+          # is INJECTED as an anchor only (latest entry + no state line). Injection
+          # view only -- the file is untouched; he unfolds automatically when he
+          # reappears. 0 disables it.
+          personOfflineChapters: 60
           compactThreshold: 0.85
           discussionLimit: 8
 
@@ -182,7 +191,7 @@
         #   foundationChapters
         #       Cap on the FIRST fill only (when background.md has no covered
         #       range yet). Reading to chapter 300 and filling for the first time
-        #       should read the opening thick, not spread 24000 chars over 240
+        #       should read the opening thick, not spread 18000 chars over 180
         #       chapters. The remainder is covered by a second, uncapped fill.
         #   minPerChapter
         #       NOTE: in the default shape this is NOT "every chapter gets this
@@ -229,16 +238,24 @@
         #       cannot serve both.
         #
         #       NOTE: thicker means one batch swallows FEWER chapters
-        #       (24000 / 1200 = 20), so "the most recent 200 chapters" takes about
-        #       10 batches. That is the intended trade, not a side effect.
+        #       (18000 / 1200 = 15), so "the most recent 200 chapters" takes about
+        #       14 batches. That is the intended trade, not a side effect.
         sample:
-          budgetChars: 24000
-          # v1.67 (150 -> 600): one batch is cut to ~40 chapters (24000 / 600).
+          # 3.0 (2026-10-02, was 24000): the model's single-output cap is 32768
+          # tokens (~2.6 tokens/char); bigger batches hit it or stall. Smaller
+          # batch = smaller reply = steadier. Must equal CONFIG_DEFAULTS.
+          budgetChars: 18000
+          # v1.67 (150 -> 600): one batch is cut to ~30 chapters (18000 / 600).
           # The per-batch TOTAL is unchanged (budgetChars is that cap) -- what
           # changes is how many chapters share it. Must stay <= maxPerChapter,
           # otherwise this floor is swallowed by the ceiling and the panel's
           # "per chapter" estimate becomes a lie.
           minPerChapter: 600
+          # 3.0: dedicated budget for the FOUNDATION fill (the first fill only,
+          # capped by foundationChapters). Its output is bounded, so it keeps the
+          # old 24000 while regular batches dropped to 18000 -- this keeps
+          # "the opening 30 chapters read thick in one batch" (reader's request).
+          foundationBudgetChars: 24000
           # v1.67 (600 -> 1200): with the batch narrowed, budget/weights lands
           # between 600 and 1200 -- leaving the cap at 600 would waste that.
           maxPerChapter: 1200
@@ -256,4 +273,4 @@
         # behaviour ("waiting tens of seconds is fine"), so this is generous.
         # The call is raced against an abort timer inside the plugin, so it can
         # never hang forever regardless of this value.
-        memoryTimeoutMs: 300000   # must equal CONFIG_DEFAULTS.memoryTimeoutMs (guarded by test/plugin.test.mjs)
+        memoryTimeoutMs: 600000   # must equal CONFIG_DEFAULTS.memoryTimeoutMs (guarded by test/plugin.test.mjs)

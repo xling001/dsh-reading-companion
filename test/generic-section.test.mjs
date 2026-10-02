@@ -20,6 +20,7 @@ import {
   BACKGROUND_GROUPED_SECTIONS,
   BACKGROUND_INJECTED_SECTIONS,
   BACKGROUND_SECTION_WEIGHTS,
+  BACKGROUND_SECTIONS,
   emptyBackground,
   mergeBackground,
   normalizeSectionName,
@@ -27,7 +28,7 @@ import {
   renderBackground,
   renderBackgroundForPrompt,
 } from '../lib/host/background.js'
-import { buildCompactPrompt } from '../lib/host/compact.js'
+import { COMPRESSIBLE_SECTIONS, buildCompactPrompt } from '../lib/host/compact.js'
 import { buildMemoryPrompt } from '../lib/host/memory.js'
 import {
   parseBackgroundUpdates,
@@ -125,7 +126,8 @@ test('兜底：**空的兜底节不改变任何分配**（差分断言）', () =
   const withFallback = parseBackground(`${LEGACY}\n## ${FALLBACK}\n`)
 
   // 预算刻意调到**紧张**：只有超预算时分配才真的在取舍，也才看得出差异。
-  const options = { budgetChars: 260, progressIndex: 24 }
+  //（⚠️ 3.0：注入少了一节（脉络并入）⇒ 同一预算的紧张度变了 ⇒ 夹紧它。） 
+  const options = { budgetChars: 150, progressIndex: 24 }
   const a = renderBackgroundForPrompt(legacy, options)
   const b = renderBackgroundForPrompt(withFallback, options)
 
@@ -242,48 +244,40 @@ test('接线：补齐提示词要求**逐主体过一遍**并**照抄专名**（
     toChapter: 1,
   })
 
-  assert.match(prompt, /已有的每一位主体/)
+  assert.match(prompt, /先过一遍「我之前整理过的认识」里已有的主体/)
   assert.match(prompt, /专名照抄原文/)
   // ⚠️ 断言打在**不变式**上，不钉某一句原文：提示词会一轮轮被压短（读者："约束太过了"），
   //    钉死原句的守卫每轮都要改，还会把注意力从"这条约束还在不在"引开。
   assert.match(
     prompt,
-    /换个说法的一条都不写|不要.*换个说法(再写一遍|重写)/,
+    /只是换个说法的都不写|一条都不写|不要.*换个说法(再写一遍|重写)/,
     '必须明确禁止同义重写（那是只长胖不长信息）',
   )
 })
 
-test('接线：压缩提示词的**顺序清单**里六节一个不少、且顺序一致', () => {
-  const prompt = buildCompactPrompt({ bookTitle: '某书', markdown: '## 人物\n', targetChars: 100 })
-
-  // ⚠️ 断言打在**那一行清单**上，不是"整段文本里出现过这个名字"。
-  // 第一版就是这么写的（`prompt.includes('`## 通用概念`')`），而变异验证证明它
-  // **抓不住"从清单里删掉一节"**——因为提示词下面还有一行"这几节要写 `### 主体`"，
-  // 那里也提到了同一节，于是"存在性"仍然成立，而清单已经少了一节、句子还写着
-  // "六个小节"。**"出现过"不等于"清单里有"，更不等于"顺序对"。**
-  const listLine = prompt.split('\n').find((line) => line.includes('个小节'))
-  assert.ok(listLine !== undefined, '压缩提示词必须有一条"顺序不变"的小节清单')
-
-  for (const name of BACKGROUND_INJECTED_SECTIONS) {
-    assert.ok(listLine.includes(`\`## ${name}\``), `顺序清单里缺「${name}」`)
+test('接线（3.0 分节作业）：要过模型的节只有清单里那六个，顺序与文件节序一致', () => {
+  // ⚠️ 3.0 起压缩是**逐节调用**：不变的保证从"提示词清单里有一节"升级成
+  //    "**结构上不在作业清单里**" —— 读者族 / 指南针 / 状态行根本不会变成输入。
+  for (const name of ['文本类型', '人物状态', '时间与分线', '冷档案']) {
+    assert.ok(!COMPRESSIBLE_SECTIONS.includes(name), `「${name}」必须永不过模型`)
   }
-  // ⚠️ 读者族的这一节也必须在这份清单里：压缩是**整份重写文件**，
-  //    提示词漏了它，文件里这一节就永久没了 ✗。（「伏笔」不单独成节 —— 2026-10-01 读者要求。）
-  for (const name of ['时间与分线']) {
-    assert.ok(listLine.includes(`\`## ${name}\``), `压缩清单里缺读者族的「${name}」`)
-  }
-  // ⚠️ 扁平节（文风 / 前文脉络）也要能合并 —— 它们没有 `###` 主体，
-  //    只靠"同主体内部合并"够不到，于是同义条目会一直堆（实测某本书文风 26 行）。
-  assert.ok(prompt.includes('扁平节'), '压缩提示词必须说明扁平节怎么合并')
+  // 作业清单的顺序必须与文件节序一致（逐节调用按清单顺序发出 ⇒ 顺序 = 节序）。
+  const inOrder = BACKGROUND_SECTIONS.filter((name) => COMPRESSIBLE_SECTIONS.includes(name))
+  assert.deepEqual(
+    inOrder,
+    [...COMPRESSIBLE_SECTIONS],
+    '分节作业的顺序必须与文件节序一致',
+  )
+  // 每次调用都是独立上下文 ⇒ 共用原则（宁可少合/不许巨段）每一遍都要带全。
+  const prompt = buildCompactPrompt({
+    bookTitle: '某书',
+    section: '人物',
+    sectionMarkdown: '## 人物\n### 甲\n- `第1章` 出场。',
+    targetChars: 100,
+  })
+  assert.ok(prompt.includes('宁可少合'), '共用原则要带全')
   assert.ok(prompt.includes('语义重复的条目'), '要允许"语义重复就合并"')
-  const positions = BACKGROUND_INJECTED_SECTIONS.map((name) => listLine.indexOf(`\`## ${name}\``))
-  for (let i = 1; i < positions.length; i += 1) {
-    assert.ok(
-      positions[i - 1] < positions[i],
-      `清单顺序必须与 BACKGROUND_INJECTED_SECTIONS 一致：「${BACKGROUND_INJECTED_SECTIONS[i]}」的位置不对`,
-    )
-  }
-  assert.match(prompt, /每一个 `###` 主体都要在/, '校验器会拒绝丢主体的压缩，提示词得跟它说同一件事')
+  assert.ok(prompt.includes('扁平节') === prompt.includes('前文脉络'), '扁平节的说明只在前文脉络自己的提示词里')
 })
 
 test('接线：更新块说明里有兜底，且点明分组分区必须给 `主体`', () => {
@@ -307,8 +301,9 @@ test('接线：更新块指定兜底 + 主体时才通过；缺主体被拒', ()
   // `mergeBackground` 认的形状。说明文本本身也含一个示例块，所以这里只喂自己
   // 这一块——说明的可解析性由 background-update.test.mjs 的往返用例负责。
   assert.ok(
-    renderUpdateInstruction().includes('「人物 / 人物关系 / 世界观 / 文风（只写一次） / 前文脉络 / 通用概念」之一'),
-    '说明书里那串"照抄这个"的节名必须与校验器接受的一致',
+    renderUpdateInstruction().includes('「人物 / 人物关系 / 世界观 / 文风（只写一次） / 通用概念」之一')
+      && renderUpdateInstruction().includes('前文脉络') === false,
+    '说明书里那串"照抄这个"的节名必须与校验器接受的一致（3.0：脉络已并入，不再宣传；校验器仍接受旧文件的脉络修正）',
   )
   const text = [
     '<!--drc-update',

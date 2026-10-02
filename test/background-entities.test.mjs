@@ -48,7 +48,7 @@ const mergeIn = (base, lines, range, options) =>
 
 //#region 实体键
 
-test('实体键：`###` 在四个分组分区下都是主体', () => {
+test('实体键：`###` 在五个分组分区下都是主体', () => {
   const doc = docOf([
     '<!-- drc-background: schema=1 covered=1..20 -->',
     '## 人物关系',
@@ -70,7 +70,7 @@ test('实体键：`###` 在四个分组分区下都是主体', () => {
   // 不知道属谁的散条目。
   assert.deepEqual(
     [...BACKGROUND_GROUPED_SECTIONS],
-    ['人物关系', '人物', '世界观', '通用概念'],
+    ['人物状态', '人物关系', '人物', '世界观', '通用概念'],
   )
   assert.deepEqual(doc.groups['人物关系']['甲 × 乙'], ['`第12章` 雨夜决裂', '`第20章` 复和'])
   assert.deepEqual(doc.groups['人物']['甲'], ['`第3章` 沉默寡言'])
@@ -467,11 +467,14 @@ test('兼容：没有任何新语法的旧文件，解析结果与从前一致',
   assert.deepEqual(doc.characters['甲'], ['`第1章` 身份未明'])
   assert.deepEqual(doc.sections['世界观'], ['`第1章` 江湖与魔教'])
   assert.deepEqual(doc.retired, [])
-  // 六个分区一个都不能少，且顺序不变（顺序即超预算时的丢弃优先级）。
+  // ⚠️ 3.0：「前文脉络」并入「时间与分线」⇒ 注入五个（脉络**不再注入**，但旧文件里
+  // 它的内容必须仍被解析保留——见 BACKGROUND_LEGACY_SECTIONS）。
   assert.deepEqual(
     [...BACKGROUND_INJECTED_SECTIONS],
-    ['人物关系', '人物', '世界观', '前文脉络', '文风（只写一次）', '通用概念'],
+    ['人物关系', '人物', '世界观', '文风（只写一次）', '通用概念'],
   )
+  // 兼容：旧文件的「前文脉络」原样解析保留（mergeById/写盘都会带着它）
+  assert.deepEqual(doc.sections['前文脉络'], ['`第1-9章` 初遇'])
   // 加了「通用概念」之后，旧文件的解析结果必须**逐字段不变**：新分区是空数组
   // （不是 undefined），既有内容一条都不掉进 unknown。这是"加法不是改动"。
   assert.deepEqual(doc.sections['通用概念'], [], '旧文件里新分区应当是空数组')
@@ -482,3 +485,39 @@ test('兼容：没有任何新语法的旧文件，解析结果与从前一致',
 })
 
 //#endregion
+
+test('「只写一次」的节（3.0 ②）：已有内容 ⇒ 合并丢弃新条目（指南针不被稀释）；空节首写照常', () => {
+  const base = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..100 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 文本类型',
+    '- 原始指南针：武侠百合，双主角。',
+    '',
+    '## 文风（只写一次）',
+    '- 平实白描，多用短句。',
+  ].join('\n'))
+  const add = parseBackground([
+    '<!-- drc-background: schema=1 covered=101..115 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 文本类型',
+    '- （本批无新增，沿用已有）',
+    '- 又一份措辞略不同的指南针。',
+    '',
+    '## 文风（只写一次）',
+    '- 又一份文风描述。',
+  ].join('\n'))
+  const merged = mergeBackground(base, add, { first: 101, last: 115 })
+  assert.deepEqual(merged.sections['文本类型'], ['原始指南针：武侠百合，双主角。'], '指南针不被稀释')
+  assert.deepEqual(merged.sections['文风（只写一次）'], ['平实白描，多用短句。'], '稳定特征不被重复书写')
+  assert.equal(merged.retired.length, 0, '重复书写不是"被推翻的说法"，不产生取代日志')
+  // 空节首写照常（第一批写指南针就是这条路）
+  const fresh = parseBackground('<!-- drc-background: schema=1 covered=1..3 -->\n# 《书》· 背景认识')
+  const firstWrite = mergeBackground(fresh, parseBackground([
+    '<!-- drc-background: schema=1 covered=1..3 -->',
+    '## 文本类型',
+    '- 第一批写的指南针。',
+  ].join('\n')), { first: 1, last: 3 })
+  assert.deepEqual(firstWrite.sections['文本类型'], ['第一批写的指南针。'], '空节首写不受守卫影响')
+})

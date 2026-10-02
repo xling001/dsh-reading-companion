@@ -219,7 +219,12 @@ test('配置契约：抽样默认值就是当初约定的那几个数', async ()
     assert.equal(health.status, 200)
     const { sample, window: win } = health.body.config
 
-    assert.equal(sample.budgetChars, 24000)
+    // 3.0（2026-10-02）：24000 → 18000（读者选定"先降试试"）—— 批更小 ⇒ 单次回复更小，
+    // 不撞模型 32768 输出上限、也不容易 stall（实测过 40 章的批撞顶、19 章的批卡满 5 分钟）。
+    assert.equal(sample.budgetChars, 18000)
+    // 3.0：打底批**专用**预算（读者："打底还是希望能够跑 30 章"）⇒ 首批的输出有界 ⇒
+    // 保住 24000 的旧预算。⚠️ 两个键的存在是配套的：改一个要说明另一个为什么不用改。
+    assert.equal(sample.foundationBudgetChars, 24000)
     // v1.25：**回退到 v1.24 之前的形状**——`lengthRatio: 0`（按预算均分）、
     // 下限回到绝对字数 100。回退理由是短章在比例模式下被截得比从前狠。
     // v1.67：**150 → 600**（读者选定"温和"档）。它同时决定"一批最多吃多少章"

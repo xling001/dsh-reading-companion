@@ -15,7 +15,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
@@ -23,7 +23,7 @@ import {
   parseBackground,
   renderBackgroundForPrompt,
 } from '../lib/host/background.js'
-import { buildCompactPrompt, createCompactor, validateCompaction } from '../lib/host/compact.js'
+import { buildCompactPrompt, COMPRESSIBLE_SECTIONS, createCompactor, validateCompaction } from '../lib/host/compact.js'
 import { createSubagentRunner } from '../lib/host/subagent-run.js'
 import { createLibrary } from '../lib/host/library.js'
 import { BOOK, call, importBook, makeDir, startServer } from './helpers/server.mjs'
@@ -35,7 +35,8 @@ const docOf = (lines) => parseBackground(lines.join('\n'))
 
 test('预算充足时**一节都不能少**（这是旧版最刺眼的一个 bug）', () => {  // 旧版把分区标题漏在额度之外，渲染时又扣了一次标题长度，于是每节凭空少
   // 十来个字符——预算充足也会因为"一条短条目 + 标题"刚好越界而整节被丢，
-  // 产出"未提供：人物关系、人物、世界观、前文脉络"这种自己打自己脸的输出。
+  // 产出"未提供：人物关系、人物、世界观"这种自己打自己脸的输出。
+  //（⚠️ 3.0：「前文脉络」并入「时间与分线」 ⇒ 不再注入 —— 夹具里的那一行删掉。）
   const doc = docOf([
     '<!-- drc-background: schema=1 covered=1..3 -->',
     '## 人物关系',
@@ -45,8 +46,6 @@ test('预算充足时**一节都不能少**（这是旧版最刺眼的一个 bug
     '- `第1章` 身份未明',
     '## 世界观',
     '- `第1章` 江湖与魔教',
-    '## 前文脉络',
-    '- `第1-3章` 初遇',
   ])
 
   const out = renderBackgroundForPrompt(doc, { progressIndex: 3 })
@@ -55,23 +54,23 @@ test('预算充足时**一节都不能少**（这是旧版最刺眼的一个 bug
   assert.match(out.text, /甲 ↔ 乙/)
   assert.match(out.text, /### 甲/)
   assert.match(out.text, /江湖与魔教/)
-  assert.match(out.text, /初遇/)
 })
 
 test('预算紧张时：人物关系优先保住，其余明说丢了多少', () => {
+  //（3.0：「前文脉络」不再注入；"被降级"的演示换「世界观」——同样是最重的下一节。）
   const doc = docOf([
     '<!-- drc-background: schema=1 covered=1..9 -->',
     '## 人物关系',
     '- 甲 ↔ 乙：很重要（`第2章`）',
-    '## 前文脉络',
+    '## 世界观',
     `- \`第1-9章\` ${'很长'.repeat(300)}`,
   ])
 
   const out = renderBackgroundForPrompt(doc, { budgetChars: 400, progressIndex: 9 })
   assert.match(out.text, /甲 ↔ 乙/, '人物关系是注入里第一个被保住的分区（裁剪优先级最高）')
   assert.ok(
-    out.omitted.includes('前文脉络') || out.trimmed.some((item) => item.name === '前文脉络'),
-    '前文脉络要被降级',
+    out.omitted.includes('世界观') || out.trimmed.some((item) => item.name === '世界观'),
+    '世界观（最重的下一节）要被降级',
   )
 })
 
@@ -79,17 +78,17 @@ test('节内截断：保留近期条目，并写明还剩几条没展示', () =>
   const entries = Array.from({ length: 40 }, (_, i) => `- \`第${i + 1}章\` ${'内容'.repeat(6)}`)
   const doc = docOf([
     '<!-- drc-background: schema=1 covered=1..40 -->',
-    '## 前文脉络',
+    '## 世界观',
     ...entries,
   ])
 
   const out = renderBackgroundForPrompt(doc, { budgetChars: 800, progressIndex: 40 })
   assert.equal(out.trimmed.length, 1, '应当报出被截断的分区')
-  assert.equal(out.trimmed[0].name, '前文脉络')
+  assert.equal(out.trimmed[0].name, '世界观')
   assert.ok(out.trimmed[0].dropped > 0)
   assert.equal(out.trimmed[0].shown + out.trimmed[0].dropped, out.trimmed[0].total)
   // 丢掉多少必须写在文本里——否则模型会以为"没提到的就是不存在"。
-  assert.match(out.text, /另有 \d+ 条脉络未在此展示/)
+  assert.match(out.text, /另有 \d+ 条设定未在此展示/)
   // 近期的优先：最后一条（第40章）一定在。
   assert.match(out.text, /第40章/)
 })
@@ -135,7 +134,7 @@ test('该不该压缩：判据用**不设预算**的完整用量，而不是被�
   // 永远不触发压缩。
   const doc = docOf([
     '<!-- drc-background: schema=1 covered=1..5 -->',
-    '## 前文脉络',
+    '## 世界观',
     `- \`第1-5章\` ${'很长的内容'.repeat(80)}`,
   ])
 
@@ -204,22 +203,39 @@ test('校验：丢了人物 → 整批丢弃（这是最不可接受的一种）
   assert.match(verdict.reason, /乙/, '要说出丢的是谁，用户才知道怎么补救')
 })
 
-test('压缩提示词：**每一节的尺度不同**必须明说（否则模型只能猜，而猜错的代价最贵）', () => {
-  // ⚠️ 2026-10-01 读者问"压缩时是否每个条目压缩程度和方法不同"。从前只有一个总目标
-  //    字数 + 一句通用规则 ⇒ 模型自己猜哪节能合并、哪节不能动；而猜错的方向恰恰是
-  //    最贵的两个：**改写「时间与分线」**（它不进提示词，删改都没人替你重建）、
-  //    或**把「人物」的主体合并掉**（丢人物卡）。
-  const prompt = buildCompactPrompt({ bookTitle: '测试书', background: '（材料）' })
+test('压缩提示词（3.0 分节作业）：每节只看自己的尺子，共用原则每一遍都要带', () => {
+  // ⚠️ 2026-10-01 读者问"压缩时是否每个条目压缩程度和方法不同"。3.0 起**物理隔离**：
+  //    每节一次独立调用，提示词里只有它自己的尺子 —— 想串尺都串不了。
+  const 人物 = buildCompactPrompt({ bookTitle: '测试书', section: '人物', sectionMarkdown: '## 人物\n### 甲\n- `第1章` 出场。' })
+  const 关系 = buildCompactPrompt({ bookTitle: '测试书', section: '人物关系', sectionMarkdown: '## 人物关系\n- 甲 ↔ 乙：对手（`第2章`）。' })
+  const 文风 = buildCompactPrompt({ bookTitle: '测试书', section: '文风（只写一次）', sectionMarkdown: '## 文风（只写一次）\n- 平实白描。' })
 
-  assert.match(prompt, /每一节的压缩尺度不一样/, '必须明说"尺子不同"')
-  assert.match(prompt, /可以压得最狠/, '扁平节（文风）要明说可以压得最狠')
-  assert.match(prompt, /覆盖的范围不许缩小/, '前文脉络合并时范围不许缩')
-  assert.match(
-    prompt,
-    /## 时间与分线[\s\S]*一个字都不许改写/,
-    '时间与分线必须明说"一个字都不许改写" —— 它是唯一没人能重建的那一节',
-  )
-  assert.match(prompt, /同一主体名下的多条 = 合并；不同主体之间 = 不许动/, '给一句能记住的原则')
+  assert.match(人物, /合并后一条 ≤40 字/, '「人物」拿自己的尺子')
+  assert.match(人物, /别把整张卡并成一条长条目/, '「人物」不许并成整卡一条')
+  assert.ok(!人物.includes('≤80 字'), '「人物」**拿不到**「人物关系」的尺子（分节作业 = 物理隔离）')
+  assert.match(关系, /合并后一条 ≤80 字/, '「人物关系」拿自己的尺子')
+  assert.match(关系, /保持分阶段的多条/, '并起来超长就保持分阶段的多条')
+  assert.match(文风, /可以压得最狠/, '文风压得最狠')
+  // ⚠️ 3.0：「前文脉络」并入「时间与分线」⇒ **不再是分节作业**（旧文件里的它由代码原样搬运）
+  assert.ok(!COMPRESSIBLE_SECTIONS.includes('前文脉络'), '脉络不在作业清单里')
+  for (const prompt of [人物, 关系, 文风]) {
+    assert.match(prompt, /同一主体名下的多条 = 合并；不同主体之间 = 不许动/, '总原则每一遍都要带（每次调用都是独立上下文）')
+    assert.match(prompt, /一个都不能少/, '主体保全每遍都要说')
+  }
+})
+
+test('压缩：不许用"合出巨段 / 超长条"来达标（2026-10-02 真机实测暴露）', () => {
+  // ⚠️ 读者手动压缩那次（第一份成功的 `background.bak`）：**练霓裳整张卡被并成一条 715 字的巨段**
+  //    （而规则是"一段 ≤200 字"），人物关系从 19 条并成 8 条、平均 **162 字**（规则是"一条 ≤80 字"）。
+  //    根因是当时这份提示词**只说"合并"、通篇没有任何长度上限** —— 而"分条/按阶段多条"是上一版故意设计的形态。
+  //    3.0 的分节作业里，这些上限跟着**各自的节**走（上一条用例）。
+  const 人物 = buildCompactPrompt({ bookTitle: '测试书', section: '人物', sectionMarkdown: '## 人物\n### 甲\n- `第1章` 出场。' })
+  assert.match(人物, /合并后一条 ≤40 字/, '「人物」合并后仍受 40 字约束')
+  assert.match(人物, /别把整张卡并成一条长条目/, '「人物」不许把整张卡并成一条')
+  const 关系 = buildCompactPrompt({ bookTitle: '测试书', section: '人物关系', sectionMarkdown: '## 人物关系\n- 甲 ↔ 乙：对手（`第2章`）。' })
+  assert.match(关系, /合并后一条 ≤80 字/, '「人物关系」合并后仍受 80 字约束')
+  assert.match(人物, /宁可少合/, '总原则：宁可少合')
+  assert.match(人物, /不许用"合出巨段\/超长条"来达标/, '不许用巨段达标')
 })
 
 test('校验：读者族被删 → 整批丢弃（它不进提示词，前两条口径都够不到它）', () => {
@@ -328,24 +344,21 @@ test('校验：覆盖区间变大是允许的（合并了别处的内容时）',
 
 //#region 压缩器
 
-test('压缩器：把模型输出解析并校验后返回，且不问联网', async () => {
+test('压缩器（3.0 分节）：按节调用，逐段解析并校验后返回，且不问联网', async () => {
   const calls = []
+  // ⚠️ 3.0 分节作业：每个**非空**的可压缩节各得一次调用；各节的回执按节名给
+  //    （真实模型就是"只回自己那一节"）。BEFORE 里的非空可压缩节 = 关系/人物/世界观。
+  const canned = {
+    //（⚠️ 各节的回执都要**不比素材长**，否则"关二：不许变大"会拦下 —— 那也是真实模型的验收口径）
+    '人物关系': ['## 人物关系', '- 甲 ↔ 乙：结怨（`第2章`）'].join('\n'),
+    '人物': ['## 人物', '### 甲', '- `第1-5章` 身份未明后立场转变', '### 乙', '- `第3章` 初登场'].join('\n'),
+    '世界观': ['## 世界观', '- `第1章` 江湖与魔教'].join('\n'),
+  }
   const compactor = createCompactor({
     startRun: async (spec) => {
       calls.push(spec)
-      return {
-        output: [{
-          type: 'text',
-          text: [
-            '<!-- drc-background: schema=1 covered=1..10 -->',
-            '## 人物',
-            '### 甲',
-            '- `第1-5章` 身份未明后立场转变',
-            '### 乙',
-            '- `第3章` 初登场',
-          ].join('\n'),
-        }],
-      }
+      const section = String(spec.label).split(':').pop()
+      return { output: [{ type: 'text', text: canned[section] ?? '' }] }
     },
     getAgent: () => ({ id: 'parent' }),
     getSubagents: () => ({ start: async () => { throw new Error('不该走到这里') } }),
@@ -360,9 +373,13 @@ test('压缩器：把模型输出解析并校验后返回，且不问联网', as
     targetChars: 100,
   })
 
-  assert.equal(result.ok, true)
+  assert.equal(result.ok, true, `分节作业应当全部通过：${JSON.stringify({ ok: result.ok, reason: result.reason })}`)
   assert.ok(result.savedChars > 0)
-  assert.equal(calls.length, 1)
+  assert.deepEqual(
+    calls.map((spec) => String(spec.label).split(':').pop()),
+    ['人物关系', '人物', '世界观'],
+    '按文件节序逐节调用；空节（通用概念/文风/前文脉络）不调用',
+  )
   // 压缩**不需要联网**：材料全在手上，联网只会引进外部信息。
   assert.deepEqual(calls[0].toolFilter, { allow: [] })
 })
@@ -370,8 +387,9 @@ test('压缩器：把模型输出解析并校验后返回，且不问联网', as
 test('压缩器：校验不过时回失败，且**不**返回任何可落盘的东西', async () => {
   const compactor = createCompactor({
     startRun: async () => ({
-      // 只留了一位人物 —— 必须被拦下。
-      output: [{ type: 'text', text: '<!-- drc-background: schema=1 covered=1..10 -->\n## 人物\n### 甲\n- `第1章` 身份未明' }],
+      // 每次都只回了「人物」一节 —— 第一次按节来问「人物关系」，回执里**没有那一节**
+      // ⇒ 逐节的"回执必须有这一节"必须拦下（不许静默把一节内容搬空）。
+      output: [{ type: 'text', text: '## 人物\n### 甲\n- `第1章` 身份未明' }],
     }),
     getAgent: () => ({ id: 'parent' }),
     getSubagents: () => undefined,
@@ -380,7 +398,7 @@ test('压缩器：校验不过时回失败，且**不**返回任何可落盘的�
 
   const result = await compactor({ sessionId: 's1', bookTitle: '测试书', markdown: 'x', doc: BEFORE })
   assert.equal(result.ok, false)
-  assert.match(result.reason, /COMPACT_LOST_CHARACTERS/)
+  assert.match(result.reason, /^COMPACT_SECTION_MISSING: 人物关系/, '回执缺节要按节拦（不丢内容、不留半成品）')
   assert.equal(result.parsed, undefined, '校验没过就绝不能给出可落盘的结果')
 })
 
@@ -396,6 +414,159 @@ test('压缩器：空背景直接拒绝，不白花一次调用', async () => {
   assert.equal(result.ok, false)
   assert.equal(result.reason, 'NO_BACKGROUND')
   assert.equal(started, 0)
+})
+
+//#region 分节作业的行为守卫（3.0 ③b）
+
+test('分节作业：一次调用只看到**一节**——大文件压 60k 字，单次提示词不超过一节的量级（天花板消失）', async () => {
+  // ⚠️ 整份重写的死因 = "模型单次输出 32768 tokens" ⇒ 分节的每一种死法都来自
+  //    "一次调用看到太多"。这里用一个大夹具证明：素材 60k 字，每次调用的提示词仍然小。
+  const fat = [
+    '## 人物关系',
+    ...Array.from({ length: 120 }, (_, i) => `- 群众${i + 1} ↔ 甲：点头之交（\`第${i + 1}章\`），有过一面之缘。`),
+    '## 人物',
+    '### 甲',
+    ...Array.from({ length: 40 }, (_, i) => `- \`第${i + 1}章\` 一步一步的经历，此处不值大书特书但也不能丢。`),
+    //（⚠️ 3.0：「前文脉络」并入「时间与分线」不再压缩；大体积的例子换「世界观」。）
+    '## 世界观',
+    ...Array.from({ length: 100 }, (_, i) => `- \`第${i + 5}章\` 这段设定与规则的粗略记载。`),
+  ].join('\n')
+  const sizes = []
+  const compactor = createCompactor({
+    startRun: async (spec) => {
+      sizes.push(spec.prompt.length)
+      const section = String(spec.label).split(':').pop()
+      // 回执 = 一小节压缩后的内容（人物是分组节 ⇒ 带上主体；另外两节是扁平节）
+      const text = section === '人物'
+        ? `## ${section}\n### 甲\n- \`第1-40章\` 平步成长的四十年。`
+        : `## ${section}\n- \`第1章\` 压缩后的代表条目。`
+      return { output: [{ type: 'text', text }] }
+    },
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const result = await compactor({ sessionId: 's', bookTitle: '大书', markdown: fat, doc: parseBackground(fat), targetChars: 800 })
+  // 每次提示词都 < 1.4 万字（素材 60k+ ⇒ 一次调用只拿一小片）；分节路径不会再有"整份重写"的输入。
+  assert.ok(sizes.length >= 3, `应有多次分节调用：${sizes.length}`)
+  assert.ok(
+    sizes.every((size) => size < 14000),
+    `每次调用只该看到一节（实际：${sizes.join('、')}）`,
+  )
+  assert.ok(result.ok === true || result.ok === false, '形状健全即可（回执是否达标由别的用例管）')
+})
+
+test('分节作业：一节**变大** ⇒ 整次压缩失败（模型写飞了不是压缩）', async () => {
+  const before = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 世界观',
+    '- `第1章` 江湖与魔教。',
+  ].join('\n'))
+  const compactor = createCompactor({
+    startRun: async () => ({ output: [{ type: 'text', text: '## 世界观\n- `第1章` 江湖与魔教，还有一段模型自己发挥的、素材里没有的expanded描述，长得比原来长得多。' }] }),
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /^COMPACT_SECTION_GREW: 世界观/)
+  assert.equal(result.parsed, undefined)
+})
+
+test('分节作业：一节的调用**失败** ⇒ 整次压缩失败，且点名是哪一节', async () => {
+  const before = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物关系',
+    '- 甲 ↔ 乙：对手（`第2章`）',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明',
+  ].join('\n'))
+  const compactor = createCompactor({
+    // "人物"那一节的调用**永远不返回** ⇒ 配合 40ms 超时 ⇒ 变成 TIMEOUT；
+    //（⚠️ 不能 return {ok:false, reason:'TIMEOUT'} —— startRun 的回执形状是 output，
+    //    那样会被 runner 当成"空输出"。）
+    timeoutMs: 40,
+    startRun: async (spec) => {
+      const section = String(spec.label).split(':').pop()
+      if (section === '人物') return new Promise(() => {})
+      return { output: [{ type: 'text', text: `## ${section}\n- \`第1章\` 原样。` }] }
+    },
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
+  assert.equal(result.ok, false, `实际原因：${JSON.stringify(result.reason)}`)
+  assert.match(result.reason, /^COMPACT_SECTION_FAILED: 人物 · TIMEOUT/, `失败要能定位到节与原因；实际 reason=${result.reason}`)
+  assert.equal(result.parsed, undefined)
+})
+
+test('分节作业：一节的失败**重试一次** —— "没睡醒"不该让整次白跑（2026-10-02 真机形状）', async () => {
+  // 真机形状：一次调用把 32768 输出全烧在推理里、正文 0 字（与"跑了多少子代理"无关）。
+  // 处置与补齐同款：同一节**重试一次**；这里钉"第一次空输出 ⇒ 重试成功 ⇒ 整次成功"。
+  let attemptsOnPerson = 0
+  const before = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物关系',
+    '- 甲 ↔ 乙：对手（`第2章`）',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明',
+  ].join('\n'))
+  const compactor = createCompactor({
+    startRun: async (spec) => {
+      const section = String(spec.label).split(':').pop()
+      if (section === '人物') {
+        attemptsOnPerson += 1
+        if (attemptsOnPerson === 1) return { output: [] }  // 第一次"没睡醒"（空输出）
+        return { output: [{ type: 'text', text: '## 人物\n### 甲\n- `第1章` 身份未明。' }] }
+      }
+      return { output: [{ type: 'text', text: `## ${section}\n- \`第1章\` 原样。` }] }
+    },
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
+  assert.equal(result.ok, true, `重试一次应该救回来：${JSON.stringify(result.reason ?? '')}`)
+  assert.equal(attemptsOnPerson, 2, '同一节恰好两次调用（不多烧）')
+  assert.deepEqual(
+    result.retriedSections,
+    [{ section: '人物', reason: 'EMPTY_OUTPUT', wastedMs: 0, ok: true }],
+    '重试要如实带上成绩（算出来 → 结果 → 路由 → 客户端，少一层就静默失效）',
+  )
+})
+
+test('分节作业：模型在回执里**夹带别的节**⇒ 只取自己那节，其余照旧原样（包括读者族）', async () => {
+  const before = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明，白衣，站在渡口。',
+    '- `第3章` 还是那身白衣，还在渡口两头打听。',
+    '## 时间与分线',
+    '### 主线',
+    '- `第1-4年` 骨架：他还在渡口。',
+  ].join('\n'))
+  const compactor = createCompactor({
+    startRun: async () => ({
+      output: [{
+        type: 'text',
+        // 回执故意比素材短（要通过"必须变小"），**并夹带一节模型没被问过的「时间与分线」**
+        text: `## 人物\n### 甲\n- \`第1-3章\` 身份未明，白衣，在渡口打听。\n## 时间与分线\n### 主线\n- \`第1-4年\` 【篡改】被模型偷改的骨架。`,
+      }],
+    }),
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
+  assert.equal(result.ok, true, JSON.stringify(result.reason ?? ''))
+  // 模型夹带的"时间与分线"**必须被丢弃**：读者族的骨架原样在
+  assert.match(result.text, /他还在渡口/, '读者族原文原样保留')
+  assert.ok(!result.text.includes('【篡改】'), '模型没资格改读者族（它没被问过那一节）')
 })
 
 //#endregion
@@ -601,7 +772,7 @@ test('自动压缩：补齐时背景太胖会先压一次，并把结果如实�
     '### 乙',
     '- `第1章` 初登场',
     '## 世界观',
-    `- \`第1章\` ${'设定'.repeat(60)}`,
+    `- \`第1章\` ${'设定'.repeat(60)}。`,
   ].join('\n')
 
   const compacted = [
@@ -616,10 +787,19 @@ test('自动压缩：补齐时背景太胖会先压一次，并把结果如实�
   ].join('\n')
 
   const labels = []
+  // ⚠️ 3.0 分节作业：压缩的回执按**节名**给（真实模型只回自己那一节）。
+  const perSectionCanned = (section) => ({
+    '人物关系': '## 人物关系\n- 甲 ↔ 乙：对手（`第1章`）',
+    '人物': '## 人物\n### 甲\n- `第1-2章` 身份未明后立场转变\n### 乙\n- `第1章` 初登场',
+    '世界观': '## 世界观\n- `第1章` 核心设定。',
+  }[section])
   const fakeSubagents = {
     start: async (kind, spec) => {
       labels.push(spec.label)
-      const text = String(spec.label).includes(':compact') ? compacted : big
+      const section = String(spec.label).startsWith('dsh-reading-companion:compact:')
+        ? String(spec.label).split(':').pop()
+        : null
+      const text = section !== null ? perSectionCanned(section) : big
       return { result: Promise.resolve({ output: [{ type: 'text', text }] }), dispose: async () => {} }
     },
   }
@@ -669,11 +849,18 @@ test('自动压缩：压缩失败**不阻断**补齐——记忆该长还得长'
 
   const fakeSubagents = {
     start: async (kind, spec) => {
-      // 压缩那一次故意丢掉一位人物 —— 安全校验必须拦下它。
-      const text = String(spec.label).includes(':compact')
-        ? '<!-- drc-background: schema=1 covered=1..2 -->\n## 人物\n### 丙\n- `第1章` 换了个人'
-        : big
-      return { result: Promise.resolve({ output: [{ type: 'text', text }] }), dispose: async () => {} }
+      // ⚠️ 3.0 分节作业：每个非空的可压缩节各来一次调用；**「人物」那一次故意只给丙**
+      // —— 逐节的"主体一个都不能少"必须拦下（丢的甲乙由节内守卫点名）。
+      if (String(spec.label).startsWith('dsh-reading-companion:compact:')) {
+        const section = String(spec.label).split(':').pop()
+        const text = section === '人物'
+          ? '## 人物\n### 丙\n- `第1章` 换了个人'
+          : section === '人物关系'
+            ? '## 人物关系\n- 甲 ↔ 乙：对手（`第1章`）'
+            : `## ${section}\n- \`第1章\` 原样保留。`
+        return { result: Promise.resolve({ output: [{ type: 'text', text }] }), dispose: async () => {} }
+      }
+      return { result: Promise.resolve({ output: [{ type: 'text', text: big }] }), dispose: async () => {} }
     },
   }
 
@@ -694,7 +881,7 @@ test('自动压缩：压缩失败**不阻断**补齐——记忆该长还得长'
 
     assert.equal(res.status, 200, '压缩失败不该让补齐一起失败')
     assert.equal(res.body.compact.ok, false)
-    assert.match(res.body.compact.reason, /COMPACT_LOST_CHARACTERS/)
+    assert.match(res.body.compact.reason, /^COMPACT_SECTION_LOST_ENTITIES: 人物/, `逐节的"保主体"要拦下丢人的那次：${res.body.compact.reason}`)
     // 关键：原文件没被那次糟糕的压缩覆盖。甲还在。
     const bg = await call(`${s.base}/books/${bookId}/background`)
     assert.match(bg.body.markdown, /### 甲/)
@@ -813,8 +1000,8 @@ test('T4：压缩成功但合并失败时，压缩**不落盘**——不为零�
     await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 2, charOffset: 0 } })
     const res = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: {} })
 
-    assert.notEqual(res.status, 200, '合并失败必须如实失败')
-    assert.equal(res.body.compact.ok, true, '压缩这一趟本身是成功的')
+    assert.notEqual(res.status, 200, JSON.stringify(res.body))
+    assert.equal(res.body.compact?.ok, true, `压缩这一趟本身是成功的：${JSON.stringify(res.body)}`)
     assert.equal(res.body.compact.persisted, false, '但它**没有**落盘——这是这条用例的全部意义')
 
     // 文件必须还是**压缩前**那份：合并前的两条记载原样在，且没有出现压缩后
@@ -970,3 +1157,214 @@ test('T4：压缩与合并共用**那一次写入**——内容、备份、覆�
 })
 
 //#endregion
+
+//#region 冷归档（3.0）：超预算先归档、不叫模型
+
+test('自动压缩：**先归档、后压缩** —— 窗口外的旧条目搬走之后就不叫模型了（3.0）', async () => {
+  // 背景与"自动压缩"那条用例同一份（条目落在第 1–2 章）。把**活跃窗口调成 2 章**、读者在第 2 章
+  // ⇒ 窗口起点 = 第 2 章 ⇒ "最晚章号 < 2"的条目（第 1 章那几条）会被冷归档搬走。
+  const big = [
+    '## 人物关系',
+    '- 甲 ↔ 乙：对手（`第1章`）',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明',
+    '- `第2章` 立场转变',
+    '## 世界观',
+    `- \`第1章\` ${'设定'.repeat(60)}。`,
+  ].join('\n')
+
+  const labels = []
+  const fakeSubagents = {
+    start: async (kind, spec) => {
+      labels.push(spec.label)
+      return { result: Promise.resolve({ output: [{ type: 'text', text: big }] }), dispose: async () => {} }
+    },
+  }
+  const fakeAgents = { get: () => ({ id: 'parent' }) }
+
+  const dir = makeDir('archive-before-compact')
+  const s = await startServer(dir, {
+    subagents: fakeSubagents,
+    agents: fakeAgents,
+    config: { window: { backgroundBudgetChars: 9000, compactThreshold: 0.95, archiveWindowChapters: 2 } },
+  })
+  try {
+    const bookId = await importBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess-archive' } })
+
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 1, charOffset: 0 } })
+    const first = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: {} })
+    assert.equal(first.status, 200)
+
+    // 读者读到第 3 章（chapterIndex 2）⇒ 与 covered 1..2 之间**没有缺口** ⇒ 这一趟只会 skipped，
+    // 而**冷归档发生在缺口判断之前**（它是代码做的，与有没有缺口无关）—— 这一条正好把它钉住：
+    // 窗口起点 = 3-2+1 = 第 2 章 ⇒ "最晚章号 < 2"的条目（第 1 章那几条）出窗口。
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 2, charOffset: 0 } })
+    const second = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: {} })
+    assert.equal(second.status, 200)
+
+    const archived = second.body.archived
+    const nowProgress = await call(`${s.base}/books/${bookId}/progress`)
+    assert.ok(
+      archived !== null && archived !== undefined,
+      '补齐结果里要如实报告冷归档；'
+      + `实际 keys=${Object.keys(second.body).join(',')} `
+      + `covered=${JSON.stringify(second.body.covered)} `
+      + `progress=${JSON.stringify(nowProgress.body)}`,
+    )
+    assert.ok(archived.moved > 0, `应当归档窗口外的旧条目：${JSON.stringify(archived)}`)
+    assert.ok(
+      !labels.some((label) => String(label).includes(':compact')),
+      `归档是纯代码的，不该叫模型压缩：${labels.join(' / ')}`,
+    )
+
+    // 文件层面：条目搬进「冷档案」且**原文还在**（只搬运、不删除），并留了整份备份
+    const read = await call(`${s.base}/books/${bookId}/background`)
+    assert.equal(read.status, 200)
+    assert.match(read.body.markdown, /^## 冷档案$/m, '文件里要有冷档案节')
+    assert.ok(read.body.markdown.includes('身份未明'), '被归档的条目仍然留在文件里')
+    assert.ok(read.body.markdown.includes('`第2章` 立场转变'), '窗口内的条目留在活分区')
+    assert.ok(archived.backupPath !== null, '落盘前必须留整份备份')
+
+    // ⚠️ **自动备份**（3.0，读者 2026-10-02 提的）：自动归档要往**导出文件夹**的
+    //    「自动备份」子文件夹里写一份处理后的全文，命名 `<书名>-第1次自动备份.md`
+    //    （后缀只有一个 —— 归档与压缩共用，读者 2026-10-02 定）。
+    //    （手动压缩的备份位置不变 —— 所以这条只盯"自动"那条路。）
+    //    落点就用响应里给的路径断言：测试环境的工作区布局与真机不同（真机 =
+    //    工作区根/陪读导出_<书名>/，测试 = <storage>/books/陪读导出_<书名>/），但形态一致。
+    const auto = archived.autoBackup
+    assert.ok(auto !== null && auto !== undefined, `自动备份要真的落盘：${JSON.stringify(archived)}`)
+    assert.match(
+      auto.path.replace(/\\/g, '/'),
+      /自动备份\/.*第1次自动备份\.md$/,
+      `命名要按读者的口径：${auto.path}`,
+    )
+    assert.ok(existsSync(auto.path), '写出的文件要真的存在')
+    assert.equal(auto.seq, 1, '第一次归档 = 第 1 次')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('会话固定（3.0）：补齐子代理先问**绑定会话**，而不是"点按钮的会话"', async () => {
+  // ⚠️ 读者实测："子代理跟着当前会话跑，而不是固定到绑定会话里跑" —— 从哪个会话点补齐，
+  //    那批记忆子代理就散落在谁的下面。定稿：**绑定会话优先**（记忆维护属于那本书，
+  //    而那本书的会话是绑定会话）；绑定的不在线 ⇒ runner 落回当前会话（不会变得不能补）。
+  const asked = []
+  const fakeAgents = { get: (id) => { asked.push(id); return { id } } } // 每个会话都"在线"
+  const fakeSubagents = {
+    start: async (kind, spec) => ({ result: Promise.resolve({ output: [{ type: 'text', text: '## 人物\n### 甲\n- `第1章` 出场。' }] }), dispose: async () => {} }),
+  }
+  const dir = makeDir('session-pinning')
+  const s = await startServer(dir, { subagents: fakeSubagents, agents: fakeAgents })
+  try {
+    const bookId = await importBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess-book' } })
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 1, charOffset: 0 } })
+    // 从**另一个**会话（sess-live）来点补齐：
+    const res = await call(`${s.base}/books/${bookId}/background/fill`, {
+      method: 'POST',
+      body: { sessionId: 'sess-live' },
+    })
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    assert.equal(asked[0], 'sess-book', `第一次问的必须是绑定会话（实际：${asked.join(' / ')}）`)
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('会话固定（3.0）：绑定会话**不在线**时落回当前会话（不会变得不能补）', async () => {
+  // 只有"当前会话"在线：绑定会话查不到 ⇒ 落回，补齐照旧成功 —— 与旧行为一致。
+  const asked = []
+  const fakeAgents = { get: (id) => { asked.push(id); return id === 'sess-live' ? { id: 'sess-live' } : undefined } }
+  const fakeSubagents = {
+    start: async (kind, spec) => ({ result: Promise.resolve({ output: [{ type: 'text', text: '## 人物\n### 甲\n- `第1章` 出场。' }] }), dispose: async () => {} }),
+  }
+  const dir = makeDir('session-pin-fallback')
+  const s = await startServer(dir, { subagents: fakeSubagents, agents: fakeAgents })
+  try {
+    const bookId = await importBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess-book' } })
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 1, charOffset: 0 } })
+    const res = await call(`${s.base}/books/${bookId}/background/fill`, {
+      method: 'POST',
+      body: { sessionId: 'sess-live' },
+    })
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    assert.deepEqual(asked, ['sess-book', 'sess-live'], '先问绑定、再落回当前')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('自适应重试（3.0 ③a）：截断嫌疑 ⇒ 砍半重试；重试**更好才换**，且要如实报告', async () => {
+  // 第一次的输出"像被截断"（最后一条没有句读收尾）⇒ 3.0 会自动重新采样一半章数再试一次；
+  // 第二次给了完整输出 ⇒ 用第二次，retried.ok = true。
+  const calls = []
+  const fakeSubagents = {
+    start: async (kind, spec) => {
+      calls.push(spec.label)
+      const text = calls.length === 1
+        ? '## 人物关系\n- `第1章` 甲与乙结怨'   // ✗ 无句读收尾 ⇒ 判为截断嫌疑
+        : '## 人物关系\n- `第1章` 甲与乙结怨。'  // ✓ 完整
+        + '\n## 人物\n### 甲\n- `第1章` 出场。'
+      return { result: Promise.resolve({ output: [{ type: 'text', text }] }), dispose: async () => {} }
+    },
+  }
+  const dir = makeDir('retry-better')
+  const s = await startServer(dir, { subagents: fakeSubagents, agents: { get: () => ({ id: 'parent' }) } })
+  try {
+    const bookId = await importBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess' } })
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 1, charOffset: 0 } })
+    const res = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: {} })
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    assert.equal(calls.length, 2, `截断嫌疑要触发一次重试：${calls.join(' / ')}`)
+    assert.equal(res.body.retried?.ok, true, '重试成功要如实报告')
+    assert.equal(res.body.retried.reason, 'TRUNCATED_SUSPECTED')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('自适应重试（3.0 ③a）：重试**没带来更好的结果**⇒ 保守保留第一次（截断批写进去的部分仍有效）', async () => {
+  // 第一次 ok+截断；重试给了垃圾（解析不出）⇒ **不能把成功换成失败**（那是倒退）。
+  let calls = 0
+  const fakeSubagents = {
+    start: async (kind, spec) => {
+      if (String(spec.label).includes(':compact')) {
+        return { result: Promise.resolve({ output: [{ type: 'text', text: '## 文本类型\n- 测试。' }] }), dispose: async () => {} }
+      }
+      calls += 1
+      const text = calls === 1 ? '## 人物\n### 甲\n- `第1章` 出场但忘了句号' : '好的，我明白了。'
+      return { result: Promise.resolve({ output: [{ type: 'text', text }] }), dispose: async () => {} }
+    },
+  }
+  const dir = makeDir('retry-keep-first')
+  const s = await startServer(dir, {
+    subagents: fakeSubagents,
+    agents: { get: () => ({ id: 'parent' }) },
+    config: { window: { backgroundBudgetChars: 300, compactThreshold: 0.5 } },
+  })
+  try {
+    const bookId = await importBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess' } })
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 1, charOffset: 0 } })
+    const res = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: {} })
+    assert.equal(res.status, 200, JSON.stringify(res.body), '第一次的成功不能被重试的失败顶掉')
+    assert.equal(res.body.retried?.ok, false, '重试没成好要如实报告')
+    assert.equal(res.body.truncatedSuspected, true, '截断嫌疑仍然要说（保留的是第一次的截断产物）')
+    assert.equal(res.body.covered.last, 1, '第一次的成果照常合并落盘')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+//#endregion
+

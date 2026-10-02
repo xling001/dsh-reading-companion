@@ -929,19 +929,20 @@ test('背景路由要回「该压缩了」的信号（它从前跟着 /context �
   }
 })
 
-test('补齐超时的默认值不能退回 2 分钟（一批要吃 24000 字、还要产出八个小节）', async () => {
-  // ⚠️ 读者实测：清空重建时**子代理"停止了"** —— 那是 `memoryTimeoutMs` 到点后我们 abort 掉它。
-  //    一批最多吃 `sample.budgetChars`（默认 24000）的字，而自从加了「伏笔与未解」「时间与分线」
-  //    之后**要产出八个小节** ⇒ 2 分钟对慢模型太紧 ✗。这条守卫防止有人把它悄悄调回去。
+test('补齐超时的默认值不能退回 5 分钟以内（一批要吃 24000 字、还要产出八个小节）', async () => {
+  // ⚠️ 读者实测**两次**：清空重建时**子代理"停止了"** —— 那是 `memoryTimeoutMs` 到点后我们 abort 掉它。
+  //    第一次是 2 分钟（2026-10-01 提到 5 分钟）；第二次是 2026-10-02，真机会话记录显示
+  //    `llmMs = 300003`（正好撞上限）、`ttftMs = 5089` 之后 `outputTokens = 0`（一个 token 都没吐）⇒
+  //    慢模型在大批次上会长时间不出字，**5 分钟仍不够**，于是提到 10 分钟。这条守卫防止有人调回去。
   const dir = makeDir('routes-timeout')
   const s = await startServer(dir)
   try {
     const health = await call(`${s.base}/health`)
     assert.equal(health.status, 200)
     assert.ok(
-      health.body.config.memoryTimeoutMs >= 300000,
-      `补齐超时默认值应当 ≥ 300000（现在 ${health.body.config.memoryTimeoutMs}）—— ` +
-      '调短会让慢模型的那一批被 abort，读者看到的是"子代理停止了"',
+      health.body.config.memoryTimeoutMs >= 600000,
+      `补齐超时默认值应当 ≥ 600000（现在 ${health.body.config.memoryTimeoutMs}）—— ` +
+      '调短会让慢模型的那一批被 abort，读者看到的是"子代理停止了"，而整批白跑',
     )
   } finally {
     await s.close()

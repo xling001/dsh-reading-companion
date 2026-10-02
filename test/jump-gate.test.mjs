@@ -37,8 +37,11 @@ const LONG_BOOK = Array.from(
   (_, i) => [`第${i + 1}章 标题${i + 1}`, prose(`正文${i + 1}`)].join('\n'),
 ).join('\n\n')
 
-/** 假模型输出：只要是一份能解析的背景认识就够，闸门测试不关心内容。 */
-const MEMORY_OUTPUT = ['## 世界观', '- `第1章` 抽样得到的设定'].join('\n')
+// 假模型输出：只要是一份能解析的背景认识就够，闸门测试不关心内容。
+// ⚠️ 必须以**句读收尾**（真实模型输出都这样）：3.0 ③a 的截断启发式会把
+// "最后一条没有句读收尾"的输出判成可疑 ⇒ 触发砍半重试 ⇒ 本文件那些
+// "出来一批就是一批"的断言全都会错位 —— 夹具要像真的。
+const MEMORY_OUTPUT = ['## 世界观', '- `第1章` 抽样得到的设定。'].join('\n')
 
 /**
  * 假子代理服务，**记录每一次调用的 label**。
@@ -118,10 +121,10 @@ test('跳读闸：**手动补**时缺口超阈值不自动补，回 409 且**一
     assert.equal(res.body.estimate.all.perChapter, 600, '全量纳入的每章下限（v1.67：150 → 600）')
     assert.equal(res.body.estimate.recent.perChapter, 1200, 'recent 那条路更厚（1200）')
     assert.equal(res.body.estimate.recent.window, 149, '窗口比缺口大时，预估按整个缺口算')
-    // ⚠️ "全部纳入"是 4 批而不是 1 批：首次补齐先走 30 章打底，剩下的按每批 40 章
-    //（24000 ÷ 600）切。预估漏掉打底就会少报一批。
-    assert.equal(res.body.estimate.all.batches, 4, '30 章打底 + 119 章 ÷ 40 章 = 4 批')
-    assert.equal(res.body.estimate.recent.batches, 8, '149 章 ÷ 每批 20 章（24000 ÷ 1200）')
+    // ⚠️ "全部纳入"是 5 批而不是 1 批：首次补齐先走 30 章打底，剩下的按每批 30 章
+    //（18000 ÷ 600，3.0 起预算是 18000）切。预估漏掉打底就会少报一批。
+    assert.equal(res.body.estimate.all.batches, 5, '30 章打底 + 119 章 ÷ 30 章 = 5 批')
+    assert.equal(res.body.estimate.recent.batches, 10, '149 章 ÷ 每批 15 章（18000 ÷ 1200）')
 
     // ★ 这条是整组测试的重点：闸门不能"先花钱再报错"。
     assert.deepEqual(labels, [], '被闸门拦下时不该发出任何一次模型调用')
@@ -146,6 +149,8 @@ test('跳读闸：mode=all 放行，回到旧行为（打底批次）', async ()
     assert.equal(res.status, 200, JSON.stringify(res.body))
     assert.ok(labels.length > 0, '放行之后必须真的发起了补齐')
     // 首次补齐走"打底"：前面 30 章读厚，剩下的留到下一次。
+    // （3.0：打底批用**专用预算** `foundationBudgetChars: 24000` —— 后续批次的预算降到了
+    //   18000，但打底批只有一个、输出有界 ⇒ 保住"开头 30 章读厚、一次成型"。）
     assert.deepEqual(res.body.covered, { first: 1, last: 30 })
     assert.equal(res.body.partial, true, '149 章的缺口不可能一次补完')
   } finally {
@@ -154,10 +159,11 @@ test('跳读闸：mode=all 放行，回到旧行为（打底批次）', async ()
 })
 
 test('跳读闸：mode=recent 只记最近这一段，**绝不碰前面那几百章**', async () => {
-  // 把窗口钉成 20 章。这本书只有 160 章 —— 用默认的 200 会让"最近 200 章"盖住整个
+  // 把窗口钉成 15 章。这本书只有 160 章 —— 用默认的 200 会让"最近 200 章"盖住整个
   // 缺口，这条用例就失去意义了。顺带钉住"窗口与阈值是两个数"：阈值仍是默认的 50，
-  // 窗口却只取 20。
-  const { s, bookId, labels } = await setup('jump-gate-recent', { sample: { recentWindowChapters: 20 } })
+  // 窗口却只取 15。（3.0 预算 18000：窗口必须 ≤ budgetChars ÷ recentMinPerChapter = 15 章，
+  // 否则这条"全取不被截"的性质就装不下。）
+  const { s, bookId, labels } = await setup('jump-gate-recent', { sample: { recentWindowChapters: 15 } })
   try {
     await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 149, charOffset: 0 } })
     const res = await call(`${s.base}/books/${bookId}/background/fill`, {
@@ -167,18 +173,17 @@ test('跳读闸：mode=recent 只记最近这一段，**绝不碰前面那几百
 
     assert.equal(res.status, 200, JSON.stringify(res.body))
     assert.ok(labels.length > 0)
-    // 最近 20 章 = 第 130–149 章。起点是 130 而不是 1，这正是这道选项的全部意义。
-    assert.deepEqual(res.body.covered, { first: 130, last: 149 })
-    assert.equal(res.body.sampled.first, 130)
+    // 最近 15 章 = 第 135–149 章。起点是 135 而不是 1，这正是这道选项的全部意义。
+    assert.deepEqual(res.body.covered, { first: 135, last: 149 })
+    assert.equal(res.body.sampled.first, 135)
     assert.equal(res.body.sampled.last, 149)
-    assert.equal(res.body.sampled.chapters, 20)
-    // ⚠️ v1.67：这里拿到的是 **1200**（= 新的 `recentMinPerChapter`）—— 20 章 × 1200
-    // = 24,000，正好把这一批的预算用满，限额 `min(max, max(min, 预算 ÷ 权重和))` 三边相等。
-    // 从前是 600（旧的 `maxPerChapter` 封顶）：那时 20 章 × 300 只花 6000，预算用不完。
-    assert.equal(res.body.sampled.perChapter, 1200, '窄窗口下这一段直接拿满（24000 ÷ 20 章 = 1200）')
+    assert.equal(res.body.sampled.chapters, 15)
+    // ⚠️ recentMinPerChapter 是 **1200**：15 章 × 1200 = 18,000（3.0 的预算），正好用满
+    // —— 限额 `min(max, max(min, 预算 ÷ 权重和))` 三边相等。
+    assert.equal(res.body.sampled.perChapter, 1200, '窄窗口下这一段直接拿满（18000 ÷ 15 章 = 1200）')
 
     // ⚠️ 并且**不能**走打底：读者已经明确说"只要最近这一段"，再按打底从窗口
-    // 起点截 30 章，等于把他要的那段砍掉一半。20 章全取 = 没被截。
+    // 起点截章，等于把他要的那段砍掉一半。15 章全取 = 没被截。
     assert.equal(res.body.partial, false, 'mode=recent 必须关掉打底，否则选它就等于选了个假选项')
   } finally {
     await s.close()
@@ -187,8 +192,8 @@ test('跳读闸：mode=recent 只记最近这一段，**绝不碰前面那几百
 
 test('跳读闸：默认窗口大于缺口时夹到缺口起点（不能算出 0 或负章号）', async () => {
   // 默认窗口 200 > 这本书的 149 章缺口。若不夹，`from` 会算成 -50。
-  // 同时钉住"更厚 = 一批更少吃几章"：下限 1200 → 24000 ÷ 1200 = **20 份权重**的空间，
-  // 而这一批头部 5 章各占 3 份权重（15）+ 5 章 ×1 = 正好 20 → 只装得下 **10 章**。
+  // 同时钉住"更厚 = 一批更少吃几章"：下限 1200 → 18000 ÷ 1200 = **15 份权重**的空间
+  //（3.0 起预算是 18000），而这一批头部 5 章各占 3 份权重（15）→ 正好装下 **5 章**。
   const { s, bookId, labels } = await setup('jump-gate-recent-wide')
   try {
     await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 149, charOffset: 0 } })
@@ -203,8 +208,8 @@ test('跳读闸：默认窗口大于缺口时夹到缺口起点（不能算出 0
     assert.ok(res.body.sampled.chapters < 149, '每章下限 1200，一趟装不下 149 章')
     assert.equal(
       res.body.sampled.chapters,
-      10,
-      '头部 5 章各 3 份权重（15）+ 5 章（5）= 20 份 = 24000 ÷ 1200（v1.67 之前是 80 份 → 装更多章）',
+      5,
+      '头部 5 章各 3 份权重 = 15 份 = 18000 ÷ 1200（预算从 24000 降到 18000 后，一批从 10 章收到 5 章）',
     )
     assert.equal(res.body.partial, true, '装不下就要如实说 partial，剩下的下次再补')
   } finally {
@@ -215,11 +220,12 @@ test('跳读闸：默认窗口大于缺口时夹到缺口起点（不能算出 0
 test('跳读闸：缺口在阈值内时完全不受影响（回归）', async () => {
   const { s, bookId, labels } = await setup('jump-gate-small')
   try {
-    // 第 30 章：缺口 29 章，低于阈值 50。
+    // 第 30 章：缺口 29 章，低于阈值 50 ⇒ 一次补完（covered===null ⇒ 打底模式，
+    // 用专用预算 24000 ⇒ 29 章一批盖得下；后续批次的 18000 预算管的是别处）。
     await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 29, charOffset: 0 } })
     const res = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: {} })
 
-    assert.equal(res.status, 200, '正常阅读必须一次就把记忆补上，不该被闸门烦')
+    assert.equal(res.status, 200, JSON.stringify(res.body))
     assert.ok(labels.length > 0)
     assert.deepEqual(res.body.covered, { first: 1, last: 29 })
   } finally {
@@ -235,6 +241,7 @@ test('跳读闸：设 0 关掉它（老用户/自动化脚本的退路）', asyn
 
     assert.equal(res.status, 200, '闸门关掉之后必须回到旧行为')
     assert.ok(labels.length > 0)
+    // 3.0：打底批用专用预算 24000 ⇒ 开头 30 章一次跑满（见"mode=all"那条的说明）。
     assert.deepEqual(res.body.covered, { first: 1, last: 30 })
   } finally {
     await s.close()
@@ -319,6 +326,7 @@ test('补齐：大缺口 + 发笔记那一路（没有 ask）→ 自动补**全�
   // 读者实测的抱怨："我发了笔记，而 AI 对本章一无所知"——因为从前这里一律回 409，
   // 而笔记栏根本没有渲染那些选项（选项只存在于面板），他拿到的只是一句无法操作的文字。
   // 现在：**发笔记顺手补**这一路绝不空手而归，至少把开头那几十章跑完。
+  // （3.0：后续批次的预算降到 18000，但打底批用**专用预算** 24000 ⇒ 开头 30 章仍一次跑满。）
   const { s, bookId, labels } = await setup('jump-gate-auto-foundation')
   try {
     await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 149, charOffset: 0 } })

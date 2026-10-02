@@ -508,16 +508,17 @@ test('背景渲染：覆盖区间与缺口都要明说，缺口是这一层的�
 })
 
 test('背景渲染：超预算时按优先级丢，人物关系最后才动', () => {
+  //（⚠️ 3.0：「前文脉络」不再注入 —— "被先丢"的演示改用「世界观」。）
   const doc = parseBackground([
     '<!-- drc-background: schema=1 covered=1..9 -->',
     '## 人物关系',
     '- 甲 ↔ 乙：很重要',
-    '## 前文脉络',
+    '## 世界观',
     `- \`第1-9章\` ${'很长'.repeat(200)}`,
   ].join('\n'))
 
   const out = renderBackgroundForPrompt(doc, { budgetChars: 300, progressIndex: 9 })
-  assert.ok(out.omitted.includes('前文脉络'), '超预算时应当先丢前文脉络')
+  assert.ok(out.omitted.includes('世界观'), '超预算时应当先丢世界观（最重的下一节）')
   assert.ok(!out.omitted.includes('人物关系'), '人物关系是重点，最后才动')
   assert.match(out.text, /甲 ↔ 乙/)
 })
