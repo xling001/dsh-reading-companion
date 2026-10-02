@@ -112,6 +112,33 @@ test('时间线：at 缺失或不可解析时不许把排序搅乱（NaN 参与�
   assert.equal(lastDiscussionAt(records), '2026-01-02T00:00:00.000Z')
 })
 
+test('时间线：**同一毫秒**的记录也必须"新在前"（2026-10-02 发布核查；CI 上 ubuntu+node22.19 每跑必红）', () => {
+  // ⚠️ `at` 只有**毫秒**精度，而"写笔记 → 发到会话 → 抓回回应"三次调用完全可能落在
+  //    同一毫秒里。旧实现靠"稳定排序保持文件顺序"⇒ 同毫秒时**最旧的排在最前**，
+  //    与"新在前"的契约正好相反。它只在**快的机器**上现形：GitHub 的
+  //    `ubuntu-latest + node 22.19` 一条腿每跑必红，而 Windows / node 24 上因为
+  //    两次调用恰好差 1ms 而一直绿 —— 这正是"测试是对的、实现是错的"那种形状。
+  //    文件是**追加写**的 ⇒ 位置就是插入顺序 ⇒ 靠后的那条更新。
+  const same = '2026-10-02T10:00:00.000Z'
+  const tied = recentDiscussions([
+    { at: same, chapterIndex: 0, thought: '先记的' },
+    { at: same, chapterIndex: 2, thought: '后记的' },
+  ], 10)
+  assert.equal(tied[0].chapterIndex, 2, '同毫秒时靠后写入的那条更新（新在前）')
+  assert.equal(tied[1].chapterIndex, 0)
+
+  // 没有 `at`（timeOf 回 0）时同理：**不许**把先写入的排到前面。
+  const noAt = recentDiscussions([{ chapterIndex: 0 }, { chapterIndex: 2 }], 10)
+  assert.equal(noAt[0].chapterIndex, 2, '缺 at 时也按插入顺序倒排')
+
+  // 差 1 毫秒时仍然按时间（别把这条修成"只看位置"）。
+  const stepped = recentDiscussions([
+    { at: '2026-10-02T10:00:00.000Z', chapterIndex: 2 },
+    { at: '2026-10-02T10:00:00.001Z', chapterIndex: 0 },
+  ], 10)
+  assert.equal(stepped[0].chapterIndex, 0, '时间不同时以时间戳为准，与位置无关')
+})
+
 test('时间线：条数封顶，旧的直接丢（信息已沉淀进 background.md）', () => {
   const path = join(makeDir('discussions-cap'), 'discussions.jsonl')
   for (let i = 0; i < 12; i += 1) {
