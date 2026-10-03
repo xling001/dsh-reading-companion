@@ -452,6 +452,48 @@ test('HTTP：讨论历史进了 AI 视角预览，且在动态区', async () => 
   }
 })
 
+test('预览：`/context` 的讨论时间线必须**过水位线**（与真实注入同一份，倒退时不显示模型看不到的）', async () => {
+  // ⚠️ 2026-10-04 修。这条路由自己的承诺是"走同一条读取路径，保证预览与实际注入
+  //    看到的是同一份东西"，而它从前另取了一份**未过滤**的 `listDiscussions`
+  //    ⇒ 读者倒退之后，预览会显示**模型根本看不到的**讨论。而这条路由存在的全部
+  //    意义就是"让读者亲眼复核模型收到了什么" —— 显示得比真实注入更多，
+  //    就把"复核"变成了误导（`injection.test.mjs` 的文件头就是拿它当参照物的）。
+  const dir = makeDir('discussions-context-waterline')
+  const s = await startServer(dir)
+  try {
+    const bookId = await importBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess-wl' } })
+    // 一条锚在**第 3 章**的讨论（读者当时读到第 3 章时聊的）。
+    await call(`${s.base}/books/${bookId}/notes`, {
+      method: 'POST',
+      body: { chapterIndex: 2, thought: '这是第三章才聊到的事' },
+    })
+    // 背景认识的水位线推到第 3 章 —— 没有它就不算"倒退"，过滤本来也不该开。
+    writeFileSync(
+      join(dir, 'books', bookId, 'background.md'),
+      ['<!-- drc-background: schema=1 covered=1..3 -->', '## 世界观', '- `第1章` 设定。', ''].join('\n'),
+      'utf8',
+    )
+    // 读者退回到第 1 章。
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 0, charOffset: 0 } })
+
+    const ctx = await call(`${s.base}/books/${bookId}/context`)
+    assert.equal(ctx.status, 200)
+    assert.doesNotMatch(
+      ctx.body.section,
+      /这是第三章才聊到的事/,
+      '预览显示了模型看不到的讨论 —— 这条路由的承诺就是"看到的是同一份"',
+    )
+
+    // ⚠️ 反向：**不倒退**时它必须照常出现（否则把过滤写成"永远不显示讨论"也能过）。
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 2, charOffset: 0 } })
+    const after = await call(`${s.base}/books/${bookId}/context`)
+    assert.match(after.body.section, /这是第三章才聊到的事/, '水位线之内必须照常显示')
+  } finally {
+    await s.close()
+  }
+})
+
 test('HTTP：绑定前的书也能记笔记与时间线（不因为没绑定就丢记录）', async () => {
   const dir = makeDir('discussions-unbound')
   const s = await startServer(dir)

@@ -1151,6 +1151,63 @@ test('背景路由要回「该压缩了」的信号（它从前跟着 /context �
   }
 })
 
+test('`beyondProgress` 的章号基准：读者**正在读**的那一章不算超前', async () => {
+  // ⚠️ 这条钉的是**调用点**，不是那个函数。`countBeyondProgress` 的契约是 **1 起**章号
+  //    （`background.test.mjs` 直接按 1 起调它 ⇒ 函数本身一直是对的，所以从来没人红过），
+  //    而 `/background` 传的是 **0 起**的 `progressIndex` ⇒ 差 1（2026-10-04 修）。
+  //    失效方向不是"漏报"而是"多报"：读者正在读第 30 章时，第 30 章的条目会被印成
+  //    "记到了你进度之后"，而同一个响应里的 `cards`（`entityCardsFor` 内部做了 +1）
+  //    把它算作可见 —— 同一条边界两个数，正好毁掉这个字段存在的意义
+  //    （它就是为了说清"面板上有 ⇒ AI 并不一定也知道"）。
+  const dir = makeDir('routes-beyond-progress')
+  const inbox = join(dir, 'inbox')
+  mkdirSync(inbox, { recursive: true })
+  writeFileSync(join(inbox, '夜行.txt'), Buffer.from(BOOK, 'utf8'))
+  const s = await startServer(dir)
+  try {
+    const scan = await call(`${s.base}/library/scan`, { method: 'POST' })
+    const imported = await call(`${s.base}/library/import`, {
+      method: 'POST',
+      body: { absPath: scan.body.entries[0].absPath },
+    })
+    const bookId = imported.body.book.bookId
+    const bgPath = join(dir, 'books', bookId, 'background.md')
+    const writeBg = (lines) => writeFileSync(bgPath, [...lines, ''].join('\n'), 'utf8')
+
+    // ⚠️ 夹具章号必须落在**这本书**的章数以内：`BOOK` 只有 3 章，而 `setProgress`
+    //    会把越界的 `chapterIndex` **钳回**最后一章（实测：传 29 被钳成 2 ⇒ 边界
+    //    跑到了第 3 章，断言看起来像"修复没生效"）。所以这里用第 2 章。
+    // 进度 = 第 2 章（0 起 1），背景认识里**有一条锚在第 2 章**（正是读者在读的那一章）。
+    writeBg([
+      '<!-- drc-background: schema=1 covered=1..2 -->',
+      '## 世界观',
+      '- `第2章` 这一条就在读者正在读的那一章里。',
+    ])
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 1, charOffset: 0 } })
+    const res = await call(`${s.base}/books/${bookId}/background`)
+    assert.equal(res.status, 200)
+    assert.deepEqual(
+      res.body.beyondProgress,
+      { entries: 0, maxChapter: null },
+      '当前这一章的条目必须算作"模型也看得到"（投喂上界就是当前章），不能报成超前',
+    )
+
+    // ⚠️ 反向：真有一条记到第 3 章时必须**报出来** —— 否则上面那条用一个恒回 0
+    //    的实现也能过，而"少报"和"多报"一样是错的。
+    writeBg([
+      '<!-- drc-background: schema=1 covered=1..3 -->',
+      '## 世界观',
+      '- `第2章` 这一条就在读者正在读的那一章里。',
+      '- `第3章` 这一条才是真的超前。',
+    ])
+    const after = await call(`${s.base}/books/${bookId}/background`)
+    assert.deepEqual(after.body.beyondProgress, { entries: 1, maxChapter: 3 }, '超前一章必须报出来')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('补齐超时的默认值不能退回 5 分钟以内（一批要吃 24000 字、还要产出八个小节）', async () => {
   // ⚠️ 读者实测**两次**：清空重建时**子代理"停止了"** —— 那是 `memoryTimeoutMs` 到点后我们 abort 掉它。
   //    第一次是 2 分钟（2026-10-01 提到 5 分钟）；第二次是 2026-10-02，真机会话记录显示

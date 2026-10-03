@@ -623,6 +623,18 @@ test('分节作业（并发）：各节的调用**同时开跑** —— wall-clo
     `两次调用应当同时开跑（${JSON.stringify(events)}）`,
   )
   assert.ok(result.savedChars > 0, '夹具的回执必须真的变小（否则差分没有意义）')
+
+  // ⚠️ **不变量：`characters` 必须指回重建后的 `groups['人物']`（同一个对象）**。
+  //    2026-10-04 补。从前组装里那句深拷贝把别名切断了，于是
+  //    `validateCompaction` 的「保名」拿**输入和自己**比 ⇒
+  //    `COMPACT_LOST_CHARACTERS` 在生产路径上永远不可能触发（假保护）。
+  //    守卫必须钉在**走真实组装**的这条路上：`validateCompaction` 那些用例是
+  //    手工造 `after` 直接喂进去的，永远看不到这个缺口。
+  assert.equal(
+    result.parsed.characters,
+    result.parsed.groups['人物'],
+    "压缩后的 `characters` 必须与 `groups['人物']` 是同一个对象 —— 否则「保名」是在跟空气比对",
+  )
 })
 
 test('分节作业：模型在回执里**夹带别的节**⇒ 只取自己那节，其余照旧原样（包括读者族）', async () => {

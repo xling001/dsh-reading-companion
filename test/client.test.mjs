@@ -2191,6 +2191,45 @@ test('位置恢复：空正文绝不能记账（否则整条进度链路失效�
   assert.equal(shouldRestorePosition('另一本:1', key, true), true, '换书换章要重新恢复')
 })
 
+test('进度回写：换章瞬间的旧偏移必须丢弃，而"还没有进度"时首次滚动必须建立它', async () => {
+  // ⚠️ 两条一起钉，因为它们**方向相反**、而写错任何一边都很难从界面上看出来。
+  //
+  // ① **丢弃**：`flush()` 会在换章时被 effect 的清理函数调用一次（闭包里是**旧章**），
+  //    而 `navigate` 已经把进度设成 `{chapterIndex: 新章, charOffset: 0}`。从前只取
+  //    `charOffset` 并保留 `prev.chapterIndex` ⇒ 进度变成「新章 + 旧章的偏移」，
+  //    接着正文页**按旧章的偏移**恢复新章的滚动位置（读者看到新章从半截开始）。
+  //
+  // ② **建立**：`progress` 的初始值是 `null`（`ReaderPanel` 的 `useState(null)`）。
+  //    一本没有存档进度的书（刚导入、一次都没翻过）首次滚动时，这一笔正是**建立**
+  //    进度的那一笔。若把它也当成"章号对不上"丢掉 ⇒ 那本书的进度**永远不记录** ——
+  //    比原来的 bug 更坏，而且**全绿**（现有夹具都先有进度）。
+  //    ⚠️ 这条是我自己写第一版修复时真踩到的：`prev` 为 null 时 `prev?.chapterIndex`
+  //    是 `undefined`，与 `fromChapter: 0` 一比就"对不上"。
+  const { nextProgressFromOffset } = await internals()
+
+  // ① 换章：旧章（0）的偏移回来时，进度已经是新章（1）⇒ 原样返回、丢弃这一笔。
+  const onNewChapter = { chapterIndex: 1, charOffset: 0 }
+  assert.equal(
+    nextProgressFromOffset(onNewChapter, 777, 0),
+    onNewChapter,
+    '换章瞬间的旧偏移被采纳了 —— 新章会按旧章的偏移恢复滚动位置',
+  )
+  // 反向：同一个章的回写必须照常采纳（否则丢弃逻辑写成了"什么都不更新"）。
+  assert.deepEqual(
+    nextProgressFromOffset({ chapterIndex: 1, charOffset: 0 }, 777, 1),
+    { chapterIndex: 1, charOffset: 777 },
+  )
+
+  // ② 还没有进度 ⇒ 建立它，章号取回写方自报的那个。
+  assert.deepEqual(
+    nextProgressFromOffset(null, 128, 0),
+    { chapterIndex: 0, charOffset: 128 },
+    '没有存档进度的书首次滚动必须**建立**进度 —— 丢掉它这本书的进度就永远不记录',
+  )
+  // 连回写方都说不清章号时（老调用方）也不能把进度丢掉。
+  assert.deepEqual(nextProgressFromOffset(null, 128, undefined), { chapterIndex: 0, charOffset: 128 })
+})
+
 // ⚠️ 原来这里有一条「位置恢复：effect 必须依赖 paragraphs，且不许退回一次性旗标」的
 //    源码正则钉子（正则抠出依赖数组再查 `paragraphs` / `initialOffset`），2026-10-03
 //    删掉了 —— 它钉的事已由 `client-runtime.test.mjs` **直接观察**：正文没到时不许落位、

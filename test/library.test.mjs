@@ -358,9 +358,49 @@ test('书库：移除书籍会清掉目录与绑定，且可保留笔记副本',
     assert.equal(result.removed, true)
     assert.ok(result.notesKeptAt, '应给出一份笔记副本的路径')
     assert.match(readFileSync(result.notesKeptAt, 'utf8'), /珍贵的手写笔记/)
+    // ⚠️ 反向：这本书**没有**书友设定 / 背景认识 ⇒ 不许造一个空目录出来
+    //    （空目录会让"已留副本"那句话重新变成噪音）。
+    assert.equal(result.companionKeptAt, undefined, '没有书友设定/背景认识时不该造空目录')
     assert.equal(f.library.list().books.length, 0)
     assert.equal(f.library.bookForSession('session-x'), undefined, '绑定必须一起清掉')
     assert.equal(f.library.remove(book.bookId).removed, false, '重复移除返回 false')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('移除书籍：读者手写的 `persona.md` 与 `background.md`（含历代备份）也要留副本', () => {
+  // ⚠️ 2026-10-04 修。从前 `remove()` 只保 `notes.md`，而 `persona.md`（「书友设定」——
+  //    **纯读者手写**）与 `background.md` 连同它的**历代备份**住在同一个 `companionDir` 里；
+  //    **插件域**的书（没有有效工作区绑定）那个目录**就是** `bookDir` ⇒ 下面那句
+  //    `rmSync` 把它们一起删掉。界面上是**单键、无确认**，文案只说"笔记已留副本"。
+  //    这是全仓唯一会**不可逆删掉读者自己的字**的路径。
+  const f = makeFixture()
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    const dir = f.library.paths.bookDir(book.bookId)
+    writeFileSync(join(dir, 'notes.md'), '# 夜行\n\n> 手写笔记\n')
+    writeFileSync(join(dir, 'persona.md'), '你是我的书友，说话别太热情。\n')
+    writeFileSync(
+      join(dir, 'background.md'),
+      '<!-- drc-background: schema=1 covered=1..3 -->\n\n## 世界观\n- `第1章` 设定。\n',
+    )
+    writeFileSync(
+      join(dir, 'background.compactbak.20261004-000000.md'),
+      '<!-- drc-background: schema=1 covered=1..3 -->\n\n## 世界观\n- `第1章` 压缩前的旧版。\n',
+    )
+
+    const result = f.library.remove(book.bookId, { keepNotes: true })
+
+    assert.ok(result.companionKeptAt, '必须给出「书友设定 + 背景认识」副本的落点')
+    assert.match(readFileSync(join(result.companionKeptAt, 'persona.md'), 'utf8'), /说话别太热情/)
+    assert.match(readFileSync(join(result.companionKeptAt, 'background.md'), 'utf8'), /设定/)
+    assert.match(
+      readFileSync(join(result.companionKeptAt, 'background.compactbak.20261004-000000.md'), 'utf8'),
+      /压缩前的旧版/,
+      '历代备份也要跟着走 —— 设计上它们「一份不删」',
+    )
+    assert.equal(existsSync(dir), false, '书目录本身仍要删干净（这才是"移除"）')
   } finally {
     f.cleanup()
   }

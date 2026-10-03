@@ -388,3 +388,41 @@ test('导出命名：来源进文件名 —— 压缩留的叫「压缩前」，
     rmSync(out, { recursive: true, force: true })
   }
 })
+
+test('「读不出来」的 notes.md 必须**报出来**，不能静默少掉整个笔记文件', async () => {
+  // ⚠️ 这一条防的是"看起来成功的残缺产物"。`notesMarkdown === null` 有两种来源：
+  //    ① 真的没有这份文件；② 有、但这次读不出来（EACCES / 被同步盘或杀毒占着）。
+  //    从前两者同一个处置 ⇒ 导出照常"成功"，而读者拿到的那份**一条笔记都没有**，
+  //    文件却完好无损 —— 他会以为笔记丢了，或者以为导出没问题。
+  //    `library.exportBook` 现在用"文件在不在"把②认出来，并通过 `notesUnreadable`
+  //    传进来；这里钉住 export 侧的处置（以及**不误报**那一半）。
+  const out = makeDir('export-notes-unreadable')
+  const out2 = makeDir('export-notes-absent')
+  try {
+    const common = {
+      bookId: BOOK_ID,
+      title: '夜行',
+      backgroundBytes: null,
+      backups: [],
+      now: '2026-10-04T00:00:00.000Z',
+    }
+
+    const unreadable = runExport({ ...common, targetDir: out, notesMarkdown: null, notesUnreadable: true })
+    assert.ok(
+      unreadable.warnings.some((line) => line.includes('没有包含笔记')),
+      `读不出来时必须如实说（面板会把 warnings 拼进出导结果），实际 ${JSON.stringify(unreadable.warnings)}`,
+    )
+    assert.ok(
+      !unreadable.files.some((file) => file.name.includes('笔记')),
+      '说清了"没包含"就不该同时写出一个空笔记文件',
+    )
+
+    // ⚠️ 反向：**真的没有**这份文件时不许报警 —— 一本还没记过笔记的书导出是正常操作，
+    //    每次导出都弹一句"读不出来"会让这句话立刻变成噪音（而噪音等于没有提示）。
+    const absent = runExport({ ...common, targetDir: out2, notesMarkdown: null, notesUnreadable: false })
+    assert.deepEqual(absent.warnings, [], '没有笔记文件不是异常，不该产生任何警告')
+  } finally {
+    rmSync(out, { recursive: true, force: true })
+    rmSync(out2, { recursive: true, force: true })
+  }
+})

@@ -1359,7 +1359,7 @@ const GUARD_CENSUS = [
   ['personaGuard', 2],
   ['discussionsGuard', 2],
   ['openGuard', 2],
-  ['notesGuard', 5],
+  ['notesGuard', 6],
   ['draftsGuard', 1],
   ['trashGuard', 2],
   ['locationGuard', 2],
@@ -1405,7 +1405,8 @@ test('守卫普查（源码扫描，本文件唯一一条非行为断言）：�
 //     bindingGuard.then / .catch、backgroundGuard.then / .catch、
 //     personaGuard.then / .catch、discussionsGuard.then / .catch、
 //     draftsGuard.then、trashGuard.then / .catch、
-//     openGuard.then、notesGuard 的 `refreshNotes` 那一处。
+//     openGuard.then、notesGuard 的 `refreshNotes` 成功/失败两处（失败那处是 2026-10-04 补的，
+//       它同时把普查里 notesGuard 的验票处数从 5 推到 6 —— 补的是真守卫，不是把计数凑上）。
 //   **未行为化**（行为层看不见，只剩普查兜着）：
 //     · openGuard.catch —— `openBook` 的 `Promise.all` 失败分支；
 //     · notesGuard 另外 4 处 —— `reloadNotesPage` 的成功/失败、`loadPage` 的成功/失败；

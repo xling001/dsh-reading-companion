@@ -353,6 +353,71 @@ test('面板侧解锁：常驻横幅、收回一键即时，以及正文页那�
   })
 })
 
+test('面板解锁/收回必须**把状态报给上层**（否则正文页那颗常驻徽标是假的）', async () => {
+  // ⚠️ 2026-10-04 修。正文页那颗「已解锁全书」徽标读的是**书架快照** `book.finished`
+  //    （`ReaderView` 的 prop），而 `book` 只在书架页 `reload` 时刷新、进正文后
+  //    `ShelfView` 已经卸载 ⇒ 在面板里点「解锁」之后，正文页**仍然不显示**它。
+  //    而 `client.js` 自己写着那正是"静默放开"、"恰恰是这件事最不该有的样子"。
+  //    失效是**两个方向**都错的，危险的那个方向是：读者以为 AI 还被锁着，
+  //    而全文其实已经对它可见。
+  //    修法 = 面板通过 `onFinishedChange` 把变化报给 `ReaderPanel`（后者 `setBook`）。
+  //
+  //    这里钉的是**报没报**：另一端（`book.finished` → 徽标真的出现）已由上面那条
+  //    ① 钉住，中间只剩 `setBook` 一行赋值 —— 而为了看那一行要跨三个视图
+  //    （面板 → 目录 → 正文）跑完整流程，成本远高于它守住的东西。
+  //
+  // ## 证伪
+  //   · 删掉 `saveFinished` 里的 `onFinishedChange?.(...)` ⇒ 两次点击后 spy 都是空的 ⇒ 红；
+  //   · 只报乐观值、不报服务端答复 ⇒ 把 `/finished` 的答复改成与请求相反时红。
+  const rt = await runtime()
+  const seen = []
+  const onFinishedChange = (value) => seen.push(value)
+
+  // ---- ① 解锁：确认之后必须报 true ----
+  {
+    const { fetch } = makeFetch(companionRoutes({ finished: false }))
+    await withFetch(fetch, () => withThrowingConfirm(async () => {
+      let tree = rt.render(rt.react.createElement(rt.internals.CompanionView, {
+        book: BOOK, sessionId: 'session-abc', onBack: () => {}, onFinishedChange,
+      }))
+      tree = await settle(rt)
+      const mark = findText(tree, '标记为已读完')
+      assert.ok(mark !== null, `夹具：这本书还没解锁：${treeText(tree).slice(0, 300)}`)
+      tree = rt.act(() => mark.props.onClick())
+      const bars = confirmBars(tree)
+      assert.equal(bars.length, 1, '夹具：解锁要先出确认条')
+      const primary = findText(bars[0], '确认这本书我已读完')
+      assert.ok(primary !== null, '夹具：确认条要有主按钮')
+      rt.act(() => primary.props.onClick())
+      tree = await settle(rt)
+      assert.ok(
+        seen.includes(true),
+        `解锁之后必须把 true 报给上层，否则正文页的「已解锁全书」不出现：${JSON.stringify(seen)}`,
+      )
+    }))
+  }
+
+  // ---- ② 收回：一键即时，同样要报 false ----
+  {
+    seen.length = 0
+    const { fetch } = makeFetch(companionRoutes({ finished: true }))
+    await withFetch(fetch, async () => {
+      let tree = rt.render(rt.react.createElement(rt.internals.CompanionView, {
+        book: BOOK, sessionId: 'session-abc', onBack: () => {}, onFinishedChange,
+      }))
+      tree = await settle(rt)
+      const withdraw = findText(tree, '收回解锁')
+      assert.ok(withdraw !== null, `夹具：已解锁时要能收回：${treeText(tree).slice(0, 300)}`)
+      rt.act(() => withdraw.props.onClick())
+      tree = await settle(rt)
+      assert.ok(
+        seen.includes(false),
+        `收回之后必须把 false 报给上层，否则正文页仍然显示「已解锁全书」：${JSON.stringify(seen)}`,
+      )
+    })
+  }
+})
+
 //#endregion
 
 //#region 取代「接线守卫：二级确认统一走 confirmBar（不许再出现浏览器原生确认框）」
