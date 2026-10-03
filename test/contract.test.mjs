@@ -453,3 +453,13 @@ function findLibFileDeclaring(name) {
   }
   return walk(join(ROOT, 'lib'))
 }
+test('补齐的**失败出口**也要报归档（2026-10-03 体检：归档在模型调用之前就落盘了）', async () => {
+  // ⚠️ 冷归档的搬移与 `background-history` 的备份增量都在**模型调用之前**落盘，而"补齐
+  //    失败"那条出口从前只说 `compact` ⇒ 读者看到"补齐失败"，**不知道这一趟已经搬走了
+  //    N 条、写过一份备份**。少报一件已落盘的事，与"没有缺口就说没缺口"是同一个病。
+  //    可证伪：把 `archived` 从那条 return 里删掉 ⇒ 本用例第一条红（实测过）。
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/host/memory-pipeline.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(src, /compact, retried\s*\}/, '失败出口不许只说压缩、不说归档')
+  assert.match(src, /compact, archived, retried\s*\}/, '两件已落盘的事都要报出来')
+})

@@ -272,3 +272,20 @@ test('冷归档：**散行**节不许被搬空（2026-10-03 体检：28 条平�
   assert.equal(moved.length, 1, '两条都出窗口时只搬走一条 —— 必须留最新的一条当身份锚')
   assert.ok(moved[0].includes('出身寒门'), '搬走的是更早那条（第 2 章），留下的必须是最新那条')
 })
+test('「人物状态」的**散行与分组块并存**时两边都要进提示词（2026-10-03 体检：混合形态下散行整批消失）', () => {
+  // 真实文件在**切换形状的那一批**里两种形态同时存在（旧散行 + 新分组），而收集散行的那段
+  // 从前只在"一个分组块都没有"时才跑 ⇒ 散行**一条都进不了提示词，也不报错**。
+  // 可证伪：把散行块改回 `if (rawStateBlocks.length === 0)` 里 ⇒ 本用例第一条红（实测过）。
+  const doc = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..100 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物状态',
+    '- `第3章` 甲还在山门。',
+    '### 乙',
+    '- `第9章` 乙已经下山。',
+  ].join('\n'))
+  const { text } = renderBackgroundForPrompt(doc, { budgetChars: 9000 })
+  assert.ok(text.includes('甲还在山门'), `散行不许因为"有分组块"就消失：${text.slice(0, 500)}`)
+  assert.ok(text.includes('乙已经下山'), '分组块照旧要在')
+})

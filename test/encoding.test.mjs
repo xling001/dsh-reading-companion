@@ -128,3 +128,20 @@ test('编码：空文件给出警告而不是抛错', () => {
   assert.equal(result.text, '')
   assert.ok(result.warnings.some((w) => w.includes('空')))
 })
+test('纯 ASCII 的单行文本**不许**被判成 UTF-16（2026-10-03 体检复现：整本乱码落盘、不报错）', () => {
+  // ⚠️ 信号 2 判的 `0x4E–0x9F` 区间**同时覆盖 ASCII 的 'N'–'Z' 与 'a'–'z'** ⇒ "奇数位
+  //    多是小写字母"的**合法 UTF-8** 会被判成 UTF-16LE。实测两条触发：「`第一章 巨章\n` +
+  //    2 MB 无换行小写 ASCII」占比 0.9998、「每行一个单词的词表」0.88 —— 都 ≥0.85。
+  //    后果：导入成功、不报错，而正文 / 目录 / 之后所有记忆与投喂**全是乱码**。
+  //    可证伪：把信号 2 里那条"低字节反证"删掉 ⇒ 本用例红（实测过）。
+  //    ⚠️ 负载必须**整段都是小写 ASCII**（占比才到 1.0）。第一版这里掺了 `'word\n'`，
+  //    奇数位只有一半在区间里 ⇒ 占比掉到 0.47、信号 2 根本没触发 ⇒ **变异电池里它不红**
+  //    （一条不会红的假守卫）。现在的负载与评审复现的那条一致。
+  const ascii = 'a'.repeat(200000)
+  const out = decodeBook(Buffer.from(`第一章 巨章\n${ascii}`, 'utf8'))
+  assert.ok(
+    out.text.startsWith('第一章 巨章'),
+    `合法 UTF-8 必须原样读出来（判成 UTF-16 就会变成乱码）：${JSON.stringify(out.text.slice(0, 40))}`,
+  )
+  assert.equal(out.text.length, '第一章 巨章\n'.length + ascii.length, 'ASCII 正文一个字都不许丢、也不许多出来')
+})
