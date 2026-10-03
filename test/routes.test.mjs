@@ -936,6 +936,38 @@ test('HTTP：状态码表 —— 「文件被改过」这类是 409，不是 400
   assert.equal(host.statusForErrorCode('NOT_A_REAL_CODE'), null, '不认识的码交给上层兜 500，不许猜一个 4xx')
 })
 
+test('HTTP：错误码优先取 `error.code`，message 前缀只是回落（2026-10-03 单轨化）', async () => {
+  // ⚠️ 这条**必须**是纯函数断言，端到端测不出来：现存**每一个**设了 `error.code` 的
+  // 错误，它的 message 要么**等于**那个码（`'STORAGE_CORRUPT'`）、要么**带着同样的
+  // 前缀**（`'LIBRARY_INDEX_CORRUPT: 书架索引…'`）⇒ 两种取法结果相同 ⇒
+  // 把规则改回"只读前缀"，全套端到端测试**照样全绿**。
+  const host = await import(freshUrl('lib/index.js'))
+  const withField = new Error('书架索引损坏了，这次导入没有执行') // 故意不带前缀
+  withField.code = 'LIBRARY_INDEX_CORRUPT'
+  assert.equal(
+    host.errorCodeOf(withField),
+    'LIBRARY_INDEX_CORRUPT',
+    '设了 code 就用它 —— 哪怕 message 里根本没有那个码',
+  )
+
+  const prefixOnly = new Error('BOOK_NOT_FOUND: 没有这本书')
+  assert.equal(host.errorCodeOf(prefixOnly), 'BOOK_NOT_FOUND', '没设 code 才回落到前缀')
+
+  // ⚠️ 反向：**前缀不许盖过 `error.code`**。导入拒绝那条路从前正是被这个绊住的 ——
+  // message 前缀是 `IMPORT_REJECTED`，而 `error.code` 被设成了细节码 `FILE_NOT_FOUND`
+  //（见 `library.js` 的 `importBook`）；于是"线上码"有两个互相矛盾的含义，
+  // 谁读错一个就整条映射落空。现在码与细节各归各位。
+  const importRejected = new Error('IMPORT_REJECTED: FILE_NOT_FOUND')
+  importRejected.code = 'IMPORT_REJECTED'
+  importRejected.reason = 'FILE_NOT_FOUND'
+  assert.equal(host.errorCodeOf(importRejected), 'IMPORT_REJECTED', '前缀与 code 一致时以 code 为准')
+  assert.equal(importRejected.reason, 'FILE_NOT_FOUND', '细节码走 reason，不再冒充线上码')
+
+  // 非 Error、以及 code 是空串：回落到前缀，不抛。
+  assert.equal(host.errorCodeOf('SOMETHING: 出事了'), 'SOMETHING')
+  assert.equal(host.errorCodeOf(Object.assign(new Error('PREFIX: x'), { code: '' })), 'PREFIX')
+})
+
 test('HTTP：lib/ 里造出来的领域错误码都有归宿（上表 / 或明说要 500）', async () => {
   const host = await import(freshUrl('lib/index.js'))
 

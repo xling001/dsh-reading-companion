@@ -1,19 +1,21 @@
 /**
- * 抽样（T2）：按章长给额度、卷首章加权、以及"库侧默认值 = 配置缺省值"。
+ * 抽样（T2）：按预算均分给额度、卷首章加权、以及"库侧默认值 = 配置缺省值"。
  *
  * ## 这一版改了什么
  *
- * 1. **每章额度从"绝对字数"改成"章长的一个比例"**
- *    （`u = clamp(lengthRatio × 章长, min, max)`）。旧形状（`lengthRatio: 0`，按预算
- *    均分）保留为合法配置，两种形状各有专测。
+ * 1. **每章额度只有一种形状：按预算均分**（`u = clamp(budgetChars ÷ 权重和, min, max)`）。
+ *    ⚠️ 2026-10-03（乙-2）：从前那条"每章额度 = 章长的一个比例"（`lengthRatio`）
+ *    已经**整体退役** —— 它把短章截得比均分狠，而短章是读者的真实用法。退役后
+ *    **传 `lengthRatio` 不报错、也不起作用**（静默降级），这条契约有专测。
  * 2. **加权的判据多了一个绝对判据：卷首章。** 原来的"全书开头 5 章"也是绝对的；
  *    两个判据合起来表达同一件事——"这本书里位置固定的那几章值得读厚"。
  *
  * ## 为什么要用差分写
  *
- * 这一版没有让任何东西"变得能用"，它换的是两种取舍的形状。所以本文件的断言
- * 几乎都是**对照**：同一本书、同一份预算，只换一个开关，结果必须按预期分开。
- * "旧形状还在"这条尤其重要——它是出问题时的退路。
+ * 这一版的断言几乎都是**对照**：同一本书、同一份预算，只换一个开关，结果必须
+ * 按预期分开。⚠️ 比例模式退役后，"两种形状对照"那几条已经没有对照物了，
+ * 它们改成了**"退役契约"**（传了也不生效）—— 对照的对手换成了"另一种写法"，
+ * 而不是"另一种形状"。
  */
 
 import { test } from 'node:test'
@@ -84,7 +86,6 @@ const OPTIONS = {
   budgetChars: 100000,
   minPerChapter: 60,
   maxPerChapter: 600,
-  lengthRatio: 0.2,
   emphasisChapters: 1,
   emphasisFactor: 3,
 }
@@ -103,27 +104,6 @@ test('抽样：夹具本身成立（六章、两卷、长短分明）', () => {
     for (const i of [0, 2, 3, 4, 5]) {
       assert.ok(lengths[i] > 3000, `第 ${i + 1} 章应当是长章，实际 ${lengths[i]}`)
     }
-  } finally {
-    f.cleanup()
-  }
-})
-
-test('抽样：额度按章长给——短章不再白占一份绝对配额', () => {
-  const f = makeFixture()
-  try {
-    const sample = f.library.sampleChapters(f.bookId, 0, 5, OPTIONS)
-
-    assert.equal(sample.partial, false)
-    assert.equal(sample.chapters.length, 6)
-    assert.equal(sample.lengthRatio, 0.2)
-    // 比例模式下每章额度不同，`perChapter` 只能承诺"至少这么多"——取本批实际
-    // 发出的最小基准（这里正是短章那份，= 下限）。
-    assert.equal(sample.perChapter, 60)
-
-    const short = sample.chapters[1].text.length
-    const long = sample.chapters[4].text.length
-    assert.ok(short < long, `短章拿到的样本必须更少：${short} vs ${long}`)
-    assert.ok(short <= 60 + 8, `短章应当只拿到下限那一点（+标记），实际 ${short}`)
   } finally {
     f.cleanup()
   }
@@ -175,34 +155,24 @@ test('抽样加权：判据是**绝对**位置，不是"本批的头几章"（�
   }
 })
 
-test('抽样：默认形状是**按预算均分**（v1.25 回退），按章长比例仍是可选项', () => {
+test('抽样：`lengthRatio` 已退役——传它也不再有比例形状（乙-2，2026-10-03）', () => {
   const f = makeFixture()
   try {
-    // 默认（**不传** lengthRatio）必须就是均分——这是 v1.25 那次回退的核心断言。
-    const { lengthRatio: omittedRatio, ...withoutRatio } = OPTIONS
-    assert.equal(omittedRatio, 0.2, '夹具自己得先真的开着比例模式，否则下面的对照是假的')
-    const byDefault = f.library.sampleChapters(f.bookId, 0, 5, withoutRatio)
-    const uniform = f.library.sampleChapters(f.bookId, 0, 5, { ...OPTIONS, lengthRatio: 0 })
-    assert.equal(byDefault.lengthRatio, 0, '默认必须是均分，不能悄悄回到比例')
-    assert.deepEqual(
-      byDefault.chapters.map((chapter) => chapter.text),
-      uniform.chapters.map((chapter) => chapter.text),
-    )
+    // ⚠️ 这条钉的是**退役后的契约**，不是"默认值是多少"：老 `settings.json` 里
+    //    带着 `sample.lengthRatio: 0.2` 的**不该报错**，但也**不许有任何效果** ——
+    //    两种写法必须产出逐字节相同的样本。
+    const withKey = f.library.sampleChapters(f.bookId, 0, 5, { ...OPTIONS, lengthRatio: 0.2 })
+    const without = f.library.sampleChapters(f.bookId, 0, 5, OPTIONS)
+    assert.deepEqual(withKey, without, '`lengthRatio` 必须被完全忽略（静默降级，不报错）')
 
-    const proportional = f.library.sampleChapters(f.bookId, 0, 5, OPTIONS)
+    // 退役的字段不许再留在返回值里 —— 留着就会有人以为它还有意义。
+    assert.equal('lengthRatio' in without, false, '返回值里不许再有 lengthRatio')
 
-    // 均分模式：非重点章一律拿到同一个绝对额度（这里顶到上限）。
-    assert.equal(uniform.perChapter, 600)
-
-    // ★ 回退的理由就在这两行：**同一章**在两种形状下命运不同。
-    // 短章（约 220 字）在均分模式下整章装得下，在比例模式下只拿到下限那一小段。
-    // v1.24 选过这个取舍（省下来的预算让给更多章），v1.25 又把它退回去了——
-    // 因为读者读的不只是长篇，短章是他的真实用法。比例模式保留为选项。
-    assert.equal(proportional.chapters[1].text.includes('（中略）'), true, '比例模式：短章被截断')
-    assert.equal(uniform.chapters[1].text.includes('（中略）'), false, '均分模式：短章整章装得下')
-
-    // 长章在两种形状下都被截断，但比例模式给得更多一些（均分要照顾所有章）。
-    assert.ok(proportional.chapters[4].text.length >= uniform.chapters[4].text.length)
+    // 均分：非重点章一律拿到同一个绝对额度（这里顶到上限）。
+    assert.equal(without.perChapter, 600)
+    // ★ 退役的理由就在这一行：短章（约 220 字）在均分模式下**整章装得下**，
+    //   而比例模式只给它下限那一小段（v1.24 选过那个取舍，v1.25 读者又退回来了）。
+    assert.equal(without.chapters[1].text.includes('（中略）'), false, '均分模式：短章整章装得下')
   } finally {
     f.cleanup()
   }
@@ -211,15 +181,20 @@ test('抽样：默认形状是**按预算均分**（v1.25 回退），按章长�
 test('抽样：预算被尊重，且永远从前往后覆盖', () => {
   const f = makeFixture()
   try {
-    const tight = f.library.sampleChapters(f.bookId, 0, 5, { ...OPTIONS, budgetChars: 2500 })
+    // ⚠️ 预算要小到**均分额度被下限托住**才会真的丢章（比例模式退役后这是唯一的
+    //    丢章路径）：权重和 10 × 下限 60 = 600 > 300 ⇒ 从后往前丢到装得下。
+    const tight = f.library.sampleChapters(f.bookId, 0, 5, { ...OPTIONS, budgetChars: 300 })
 
     assert.equal(tight.partial, true, '覆盖不全时必须如实报告')
     assert.equal(tight.chapters[0].index, 0, '从前往后覆盖，第一段一定在')
     assert.ok(tight.to < 5, '不应当一步跨到区间末尾')
-    // 每章的正文部分不超过它的额度；`（中略）` 标记本身是额外 5 个字符。
+    // ⚠️ 均分模式下这条断言**不能**写成"逐字 ≤ 预算"：额度是每章一份、按章取整，
+    //    而 `（中略）` 标记本身也占字。真正要钉的是"**没有把预算穿掉**" ——
+    //    允许超出"最后那一章拿到的份额 + 它可能的标记"。
+    //    （实测：预算 300 / 每章额度 75 / 两章 ⇒ 318，超出的是标记与取整。）
     assert.ok(
-      tight.totalChars <= 2500 + 5 * tight.chapters.length,
-      `样本总量必须落在预算附近：${tight.totalChars}`,
+      tight.totalChars <= 300 + tight.perChapter + 8 * tight.chapters.length,
+      `样本总量必须落在预算附近：${tight.totalChars}（预算 300，每章额度 ${tight.perChapter}）`,
     )
   } finally {
     f.cleanup()
@@ -236,8 +211,6 @@ test('抽样：库侧兜底默认值与配置缺省值是**同一套**（别写�
     const bare = f.library.sampleChapters(f.bookId, 1, 3, {})
     const explicit = f.library.sampleChapters(f.bookId, 1, 3, { ...CONFIG_DEFAULTS.sample })
     assert.deepEqual(bare, explicit, '库侧兜底默认值必须与 CONFIG_DEFAULTS.sample 等价')
-    assert.equal(bare.lengthRatio, CONFIG_DEFAULTS.sample.lengthRatio)
-    assert.equal(bare.lengthRatio, 0, 'v1.25 的默认是均分')
     // 下限要被**真的用到**才证明它与配置同源：预算给到极小，均分额度就只能落到
     // 下限上。⚠️ 这一条以前写的是"这一批含短章，所以最小值就是下限"——那在**比例**
     // 模式下成立，v1.25 回到均分之后不再成立（均分给每章同一份额度，短章只是装得下

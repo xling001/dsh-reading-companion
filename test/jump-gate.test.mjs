@@ -497,3 +497,42 @@ test('补齐：大缺口 + 发笔记那一路（没有 ask）→ 自动补**全�
     await s.close()
   }
 })
+
+test('进度：补齐只在**章号真的变了**时才归零章内偏移（乙-1）', async () => {
+  // ⚠️ 这条修的是一个**读者能感觉到**的副作用：从前 `atChapter` 那条路一律
+  //    `charOffset: 0`，于是"在第 3 章读到一半、顺手发条笔记"会把他弹回**章首** ——
+  //    之后不滚动就关掉，下次打开落在章首，而不是他读到的位置。
+  //
+  // 两件事本来就无关：这一段要推的是**章号边界**（缺口算错的那个 bug），
+  // 章内位置是读者的阅读落点。章号真的变了才归零（新章的位置就是章首）。
+  const { s, bookId } = await setup('char-offset')
+  try {
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 2, charOffset: 5 } })
+
+    // ★ 先证明夹具前提真的成立：偏移是个**正数**。若 `setProgress` 把它夹成 0，
+    //   下面的断言就变成了"0 === 0"—— 看着绿，其实什么都没验证。
+    const seeded = await call(`${s.base}/books/${bookId}/progress`)
+    const offset = seeded.body.progress.charOffset
+    assert.equal(seeded.body.progress.chapterIndex, 2)
+    assert.ok(offset > 0, `夹具前提：章内偏移必须是个正数（实际 ${offset}）`)
+
+    // ① 章号没变（发笔记那一路带的 `atChapter` 就是当前章）⇒ 偏移**必须留着**。
+    const same = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: { atChapter: 2 } })
+    assert.equal(same.status, 200)
+    const after1 = await call(`${s.base}/books/${bookId}/progress`)
+    assert.equal(after1.body.progress.chapterIndex, 2, '章号不变')
+    assert.equal(
+      after1.body.progress.charOffset,
+      offset,
+      '章号没变 ⇒ 章内位置不该被抹掉（抹掉就是"下次打开落回章首"）',
+    )
+
+    // ② 章号真的变了 ⇒ 归零（旧偏移对新章没有意义）。
+    await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: { atChapter: 5 } })
+    const after2 = await call(`${s.base}/books/${bookId}/progress`)
+    assert.equal(after2.body.progress.chapterIndex, 5, '章号推进了')
+    assert.equal(after2.body.progress.charOffset, 0, '换章 ⇒ 章内偏移归零')
+  } finally {
+    await s.close()
+  }
+})

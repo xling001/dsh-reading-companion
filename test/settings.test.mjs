@@ -279,8 +279,10 @@ test('配置契约：抽样默认值就是当初约定的那几个数', async ()
     // 3.0：打底批**专用**预算（读者："打底还是希望能够跑 30 章"）⇒ 首批的输出有界 ⇒
     // 保住 24000 的旧预算。⚠️ 两个键的存在是配套的：改一个要说明另一个为什么不用改。
     assert.equal(sample.foundationBudgetChars, 24000)
-    // v1.25：**回退到 v1.24 之前的形状**——`lengthRatio: 0`（按预算均分）、
+    // v1.25：**回退到 v1.24 之前的形状**——按预算均分（当时写作 `lengthRatio: 0`）、
     // 下限回到绝对字数 100。回退理由是短章在比例模式下被截得比从前狠。
+    // ⚠️ 2026-10-03（乙-2）：那个机制**整体退役**，配置键 `sample.lengthRatio` 已删除
+    // ⇒ 这里断言它**不存在**。老 `settings.json` 里带着它的不报错、也不起作用。
     // v1.67：**150 → 600**（读者选定"温和"档）。它同时决定"一批最多吃多少章"
     // （`budgetChars ÷ minPerChapter`），所以一批从约 160 章降到约 40 章；
     // **每批总输入不变**（预算上限没动），代价是调用次数变多。
@@ -288,7 +290,7 @@ test('配置契约：抽样默认值就是当初约定的那几个数', async ()
     // 上限不抬起来那部分预算就白剩（下限也绝不能高过上限，见 index.js 的注释）。
     assert.equal(sample.minPerChapter, 600)
     assert.equal(sample.maxPerChapter, 1200)
-    assert.equal(sample.lengthRatio, 0)
+    assert.equal('lengthRatio' in sample, false, '退役的配置键不许留在缺省值里')
     // 这三条是读者逐条拍板的：首次批次 30 章、开头 5 章、加权 3 倍。
     assert.equal(sample.foundationChapters, 30)
     assert.equal(sample.emphasisChapters, 5)

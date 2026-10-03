@@ -311,7 +311,6 @@ node scripts/link-into-profile.mjs --profile desktop --unlink    # 完全回滚
 | `sample.foundationBudgetChars` | number | `24000` | **打底批**（首次补齐那批）专用预算（3.0）：它只有一个、输出有界，所以保住旧预算 ⇒ "开头 30 章读厚、一次成型" |
 | `sample.minPerChapter` | number | `600` | 默认形态下这是"均分额度的下限"，**同时决定一批能吞多少章**：`一批章数 ≈ budgetChars / minPerChapter`（600 → 约 30 章）。⚠️ 不要设得比 `maxPerChapter` 高，否则这个下限会被上限吞掉 |
 | `sample.maxPerChapter` | number | `1200` | 单章上限（重点章可拿到它的 `emphasisFactor` 倍）。批越窄，`budgetChars ÷ 权重和` 算出的额度越高，靠它放行 |
-| `sample.lengthRatio` | number | `0` | **可选形态**：`0` = 均分（默认）；设 `0.2` 改为"按章节长度比例分配"（代价是**短章被切得更狠**，见 `docs/design-v1-archive.md` §197） |
 | `sample.foundationChapters` | number | `30` | **只对第一次补齐生效**的上限：第一次就厚读开头，而不是把预算摊到几百章 |
 | `sample.emphasisChapters` | number | `5` | 开头前 N 章（以及每卷的卷首章）按 `emphasisFactor` 加权 |
 | `sample.emphasisFactor` | number | `3` | 加权倍数 |

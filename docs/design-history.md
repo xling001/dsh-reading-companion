@@ -10,6 +10,91 @@
 
 ---
 ## 修订史（新在前）
+> **v3.13 修订（分区注册表化：19 张平行常量表 → 一行 = 一节）**
+>
+> 708. **`lib/host/sections.js`：把"一节是什么"收成一处定义。** 起因是独立评审（第 1 轮）把"15 张平行常量表"列为 P0-1，我核了一遍，实测是 **19 张**：文件节序 / 注入族 / 整条注入族 / 读者族 / 已并入的旧节 / 分组与否**还分两张** / 只写一次 / 补齐增量 / 权重 / 可压缩 / 归档豁免 / 量词 / 别名 / 单名常量 ×4。全都在 `background.js` 里，靠"顺序必须与权重同序""定义必须排在读者族之前（`const` 不提升）"这类**纪律**维持 —— 而 2026-10-01 那次（`### 主线` 每次写盘被丢、627 条守卫全绿放行）的根因正是**一个概念有多个定义点**。
+>      **形状**：新建 `host/sections.js`（**零 import 的纯数据文件** —— 避免给 `background-update → background → spoiler → background-update` 那个既有环再添一条边），一行 = 一节、字段 = 侧面；`BACKGROUND_SECTIONS` 直接取表内顺序（**数组顺序就是文件节序**）；其余 18 个常量全部 `filter` 派生；`background.js` 只 **import + re-export**（`background-update.js` / `compact.js` / `memory.js` **零改动**）；`compact.js` 的 `COMPRESSIBLE_SECTIONS` 也改成派生再导出。
+>      ⭐ **顺手消灭一条约束**：`BACKGROUND_ARCHIVE_SECTION` 那条"定义必须排在读者族常量之前"**不存在了** —— 对象字面量没有 TDZ。`design.md` 里那行已划掉。
+>      ⭐ **`COMPRESSIBLE_SECTIONS` 与 `BACKGROUND_INJECTED_SECTIONS` 当前同值，但没有合并**：前者是"**让**模型改"、后者是"**给**模型看"，今天重合、明天加一节就会分开 ⇒ 是注册表里的**两个字段**。
+>      **证据（60 项核对，0 项不一致）**：把 `git HEAD` 那一版取出来落成临时模块，与重构后逐常量深比 —— 19 个常量全部逐字一致（含我没动的 `BACKGROUND_NOTE` / `BACKGROUND_SCHEMA_VERSION` / `BRACKET_PAIRS`）；`isGroupedSection` / `normalizeSectionName` 各 18 个探针一致；`COMPRESSIBLE_SECTIONS` 再导出一致；注册表自洽（10 行无重复、family 合法、权重和 = 1）。全量 **818/818/0**（817 + 新守卫 1 条）。
+>      ⚠️ **诚实说：净行数是 +122（`lib/` 22,599 → 22,721）**，`background.js` −345、`sections.js` +469。评审估"净减 100–150 行"**不成立** —— 本仓库的注释是**资产**，搬进表里不是删掉。**这一条省的不是行数，是定义点数量：19 → 1。**
+>      ⚠️ **守卫的形状改了，数量没改**：`contract.test.mjs`「分组判定只有一处定义」原本把实现**硬编码**成 `background.js` + `return BACKGROUND_GROUPED_SECTIONS.includes(...)` ⇒ 实现一搬家就误报（它确实红了）。改成数 `export function isGroupedSection` 的**处数**（正好 1）、**不钉位置**。另加一条新守卫「分区常量只在 `host/sections.js` 里定义」（18 个名字逐个查声明处，再导出不算声明）—— 钉住"派生"这件事不被改回去。
+>      ⚠️ **顺带更正 `design.md` 一处旧错**：那里写 `BACKGROUND_SECTIONS` 是"**九**节 = 元判断 1 + 注入 5 + 读者 2 + 旧节 1"—— **漏了「人物状态」**，实际是 **10** 节。已改。
+>
+> 709. **`lib/host/defaults.js`：6 对"同值两处"改成同源。** 独立评审 P0-2 说"至少 10 组默认值在两处各写一份"。我按值扫了一遍（`index.js` 的 `DEFAULTS` ↔ `library.js` 的 `?? 字面量`），**实测 8 个候选、6 对是真的**：`backgroundBudgetChars` 9000 / `fallbackBlockChars` 4000 / `headAllowanceChars` 1500 / `sample.maxPerChapter` 1200 / `sample.minPerChapter` 600 / `discussionLimit` 8。
+>      ⚠️ **剔掉三个假阳性**（按值配对必然出这种）：`1024`（导出目录名上限 vs 设置路径上限，两个**不相干**的上限）、`24000`（`foundationBudgetChars` vs `library.js` 里 `options.budgetChars ?? 24000` —— **`budgetChars` 是通用参数**，它的调用方常传 `backgroundBudgetChars`(9000)，不是同一个概念）、`1200` 的另一半（`recentMinPerChapter` 与 `maxPerChapter` 同值但语义相反，一个下限一个上限）。
+>      **做法**：`HOST_DEFAULTS` 一份；`index.js` 的 `DEFAULTS` 与 `library.js` 的兜底都从它取 ⇒ "同值"由 **import** 保证，不再由纪律 + 测试保证。先例是同一轮早些时候的 `longChapterSplit`（唯一来源 `chapters.js` 的 `DEFAULT_LONG_CHAPTER_SPLIT`）。
+>      **证据**：全量 **819/819/0**（818 + 新守卫 1 条）。**变异电池**：library.js 兜底写回 `9000` ⇒ 红；index.js 配置缺省写回 `600` ⇒ 红；对照组绿；两个文件 SHA256 还原一致。
+>      ⚠️ **诚实说：一条旧守卫都没变多余。** 评审估"删约 10 条守卫"**不成立** —— 那些"不许分叉"的守卫比的是**值**、不是字面量，所以它们现在自动断言的是"派生同源"，仍然有效（`sampling.test.mjs` / `long-chapter-split.test.mjs` 那两条）。**行数也没省**（`defaults.js` 里 40 行是注释）。这一条省的同样不是行数，是**纪律**：**分叉过一次的东西，别再靠纪律维持。**
+>      ⚠️ 同时把三处**已过期**的注释改掉了（`library.js` 两处 + `index.js` 一处，原话都是"必须与 … 同值，有测试钉住不许分叉"）。
+>
+> 710. **错误协议单轨化：取码优先 `error.code`，message 前缀降级成可读性。** 起因是独立评审 P0-3。⚠️ **但它的写法不能照抄** —— 评审说"`guarded()` 改成 `error.code ?? message.split(':')[0]`"，我核了一遍发现那会**改掉导入拒绝那条路的行为**：`library.js` 的 `importBook` 里 message 前缀是 `IMPORT_REJECTED`，而 `error.code` 被设成了**细节码** `inspected.reason`（`FILE_NOT_FOUND` 这类）。直接改 ⇒ `code` 变成 `FILE_NOT_FOUND` ⇒ `guarded()` 里那个 `IMPORT_REJECTED` 特判**整个落空**（`{ error, reason, code }` 那个体形不再产出）。
+>      **真正的病根**：同一个"码"有两个互相矛盾的含义。处置是让**线上码只有一个来源** —— `importBook` 改成 `error.code = 'IMPORT_REJECTED'` + `error.reason = inspected.reason`（细节走独立字段），`guarded()` 读 `error.reason ?? message.split(': ')[1]`。
+>      **做法**：抽出 `export function errorCodeOf(error)`（纯函数，与 `statusForErrorCode` 并列）—— 优先 `error.code`，读不到才回落到前缀；`export.js` 的 `exportError` 保留前缀，但注释改成"前缀只是给人看的可读性，取码不靠它"（原文写的是"只设 code 而不带前缀，映射就落不到"—— 那条隐式契约没了）。
+>      ⚠️ **关键发现：这条改动端到端测不出来。** 现存**每一个**设了 `error.code` 的错误，它的 message 要么**等于**那个码（`'STORAGE_CORRUPT'`）、要么**带着同样的前缀**（`'LIBRARY_INDEX_CORRUPT: 书架索引…'`）⇒ 两种取法结果**相同** ⇒ 把规则改回"只读前缀"，**全套端到端测试照样全绿**。所以必须抽成纯函数才能断言 —— 这正是 `statusForErrorCode` 当初被抽出来的同一个理由（它自己那条注释里写着"抽成纯函数有两个理由：一个 code 只出现在一个集合里；它能被直接断言"）。
+>      **证据**：全量 **820/820/0**（819 + 新用例 1 条）。**变异电池**：`errorCodeOf` 改回"只读前缀" ⇒ 红；空串 `code` 不再回落 ⇒ 红；对照组绿；`lib/index.js` SHA256 还原一致。
+>
+> 711. **`fill` 路由整包转发 + 键集契约。** 治的是「跨四层少一层就静默失效」这个 bug 类 —— **已踩三次**，最狠的一次是 `truncatedSuspected`：fill 结果里有这个旗子、客户端也在读它，但路由的**逐字段手抄**从来没带上它，于是"输出像是被截断了"那句提示在真机上**一直是哑的**。形状是 **算出来 → 结果对象 → 路由转发 → 客户端读**，四层里少一层不报错、只静默。
+>      **做法**：`return ok({ ...result, bookId, covered, gap })` —— 新增字段只要在 `fillMemoryGap` 的返回里加上就**自动上线**。⚠️ 顺带消掉一处**重复的理由**：路由那 12 条逐字段注释（`truncatedSuspected`/`retried`/`archived`/`resetDuringFill`…）在**产生侧**（`fillMemoryGap` 的返回处）已经各有一份，正是"同一段理由两处各讲一遍" —— 那些注释只留产生侧那一份（那才是它该在的地方），路由只留那条踩过三次的教训。
+>      ⚠️ **副作用与它的处置**：路由从前用 `?? null` / `=== true` 替结果兜默认值，整包转发后**不再兜** ⇒ 少一个键客户端拿到的就是 `undefined`。`compact.test.mjs` 的 T4 当场变红（它断言 `skipped === false`，而"只剩手动补"那条路干脆没有这个键）。⇒ 把默认值**归位到产生侧**：`fillMemoryGap` 的每个成功出口都显式给出同一套键。
+>      ⭐ **契约测试当场抓到第四个出口。** 我原以为成功出口有 3 个，写了守卫才发现是 **4 个** —— `L1002` 那条"没有缺口这一趟也要报冷归档"的路**少了 5 个键**（`retried`/`truncatedSuspected`/`sampled`/`partial`/`autoFoundation`），全靠旧路由的 `?? null` 悄悄兜住，**谁都没发现**。这正是那个 bug 类的现场（只不过这次是"少一层兜底"）。
+>      **契约测试两条**（`contract.test.mjs`，源码级）：① 路由成功分支必须 `...result` 且不许再有 `result.xxx === …`；② `fillMemoryGap` 的每个 `return {`（带 `ok` 的）**键集必须一致**。⚠️ 扫描器第一版只认 `name:`，漏了**简写键**（`compact,` / `archived,`）⇒ 报了一堆假差异；认 `(\w+)\s*[:,]` 才对。
+>      **证据**：全量 **821/821/0**（820 + 契约测试 1 条）。**变异电池**：给某个出口多塞一个键 ⇒ 红；拆掉 `...result` ⇒ 红；对照组绿；SHA256 还原一致。
+>
+> 712. **`fillMemoryGap` 搬进 `lib/host/memory-pipeline.js`（甲-4a，纯搬迁）。** `index.js` **2,870 → 2,128 行（−742）**；新文件 767 行（741 行搬迁 + 26 行文件头与 import）。⚠️ `lib/` 总量反而 **+26**（22,828 → 22,854）—— 这次买的**不是行数**，是"`index.js` 这个文件里少一个 579 行的域"（它现在的职责收窄成"cordis 装配 + 路由分发表"）。
+>      **先量依赖，再动手**（`drc-guard-audit\_dep-closure.mjs`，只读）：`fillMemoryGap` 对 `index.js` 模块作用域的依赖闭包是 **19 个名字** —— 13 个已经是从 `node:fs`/`node:path`/`host/*` 导入的，另外 **4 个**是 `index.js` 自己的模块级（`describeMemoryFailure` / `largeGapResult` / `RETRYABLE` / `writeArchiveDelta`）。⭐ 动手前实测了这 4 个在正文之外**只出现在自己的声明行**（没有第二处调用者）⇒ 可以整体搬走，**不需要从新文件再导出回来**（那样会形成循环 import）。
+>      **等价性证明**（`_equivalence-fill.mjs`）：从 `git HEAD` 的 `index.js` 按同样规则抽出那 5 段，断言每一段**逐行**存在于新文件 —— 5 段全部通过，**唯一差异是 `fillMemoryGap` 的声明行**（私有 → `export`，搬迁的必要改动）。同时核对没有"复制残留"（原声明行已不在 `index.js`）。
+>      ⚠️ **踩到的两个坑（都记过、又犯了一次）**：① 搬过去忘了 `export` ⇒ 110 条红（`does not provide an export named 'fillMemoryGap'`）；② 那条契约测试把 `fillMemoryGap` 的位置**钉死在 `index.js`** ⇒ 一搬家就误报 —— 这正是甲-1 刚踩过的「实现搬家 ⇒ 守卫误报」，改成在 `lib/` 里**找**它（`findLibFileDeclaring`）；③ 那个查找函数第一版 `new RegExp(…'^…')` **没带 `m`** ⇒ `^` 只匹配整个文件开头 ⇒ 永远找不到（同一轮第二次犯"RegExp flags"的错）。
+>      ⚠️ 顺带清掉 8 个**因搬迁而失效的 import**（`mkdirSync`/`readdirSync`/`writeFileSync`/`renderExistingForFill`/`HISTORY_DIR`/`buildArchiveDelta`/`historyFileName`/`nextHistorySeq`）。
+>      **证据**：全量 **821/821/0**；等价性核对 5/5 段逐字一致。
+>
+> 713. **进度：补齐只在"章号真的变了"时才归零章内偏移（乙-1，读者拍板）。** 独立评审疑点①，实测**成立**：`atChapter` 那条路（发笔记与点补齐都会走）从前一律 `charOffset: 0` ⇒ 读者"在第 3 章读到一半、顺手发条笔记"会被**弹回章首**；他之后不滚动就关掉，下次打开落在章首而不是读到的位置。
+>      **修法（最小、边界清楚）**：`atChapter === 当前 progress.chapterIndex` 时**保留**原偏移，章号真变了才归零（新章的位置就是章首，旧偏移对它没有意义）。读一次 `getProgress` 的事。
+>      ⚠️ **两件事本来就无关**：这一段要推的是**章号边界**（缺口算错那个 bug 的解药），而章内位置是读者的阅读落点。原注释把两者混在一句里，所以一直没人注意到偏移被顺手抹掉了。
+>      ⚠️ **测试夹具必须先自证**：新用例开头断言"章内偏移是个**正数**" —— 因为 `setProgress` 会把越界偏移**夹到章长**，若夹具给的偏移被夹成 0，后面的断言就退化成 `0 === 0`，**看着绿、其实什么都没验证**。这是本仓库既有纪律（"钉住某个值之前先证明它存在"）在新用例上的应用。
+>      **证据**：全量 **822/822/0**（821 + 新用例 1 条）。**变异电池**：改回"一律归零" ⇒ 红；换章时也保留旧偏移 ⇒ 红（两个方向的错法都抓到）；对照组绿；SHA256 还原一致。
+>
+> 714. **`lengthRatio`（按章长比例给额度）整体退役（乙-2，读者拍板）。** 它是"读厚"机制的另一半，读者在 2026-10 明确**收回**了那个机制（短章在比例模式下被截得比从前狠：200 字的短章只拿得到下限那一小段，而短章是读者的真实用法）。**生产上它一直是 `0`（按预算均分）**，lib 里却还留着一条完整的比例分支 + 一整档守卫 + 一处 `?? 0` 兜底。
+>      **删了什么**：`library.js` 的 `quotaOf`、预算刀的 `else` 分支（"逐章算额度再累加"）、`baseOf` 的三元、`perChapter` 的"取本批最小值"、返回体的 `lengthRatio` 字段、jsdoc 的参数与返回描述；`index.js` 的 `sample.lengthRatio: 0` 配置键与那段"改一个数就能打开"的注释；`defaults.js` 里两处提到它的注释；`sampling.test.mjs` 那条**专测比例形状**的用例（实现删了，守卫同一次提交一起删——本仓库既有纪律）；`README.md` 配置表那一行；`manual-testing.md` 的抽样形状步骤。
+>      ⚠️ **配置项被"接受但无效果"**：老 `settings.json` 里带着 `sample.lengthRatio: 0.2` 的**不报错**，但也**不许有任何效果**。这条**静默降级**是刻意的（用户不该因为一个退役开关而报错），**必须如实告知** —— 所以 `manual-testing.md` 那条改成了"设成 0.2 存盘，样本应当逐字不变"，README 里也写明"想让短章多拿一点改用 `minPerChapter`/`maxPerChapter`"。
+>      ⚠️ **删除暴露了三条"顺手写下的断言"**：① 「额度按章长给」那条测的正是被删的路 ⇒ 删；② 「默认是均分，比例仍是可选项」⇒ **改写成退役契约**（传 `0.2` 与不传必须逐字节相同 + 返回值里不许再有这个键）；③ 「预算被尊重」那条原来靠比例模式才 `partial: true`，改成均分后**额度是按预算反解出来的** ⇒ 只有被 `minPerChapter` 托住才会丢章，于是预算要压到 `300`；而"总量逐字 ≤ 预算"也不再成立（额度每章一份、按章取整，`（中略）` 标记还占字）⇒ 改成"允许超出一份额度 + 标记"。
+>      **证据**：全量 **821/821/0**（822 − 1 条删除的用例）。**变异电池**：把 `lengthRatio` 放回返回值 ⇒ 红；放回一个恒为 0 的同名字段 ⇒ 红（"字段回来了"本身就该红）；对照组绿；SHA256 还原一致。`design-v1-archive.md` 的 §197 是**历史档，一个字没动**（只在别处注明"它描述的形状已不在代码里，不要照它调参"）。
+>
+> 715. **甲-4b 经实测不建议做（关闭，零改动）。** 清单的前提是"`index.js` 2,818 行里含约 560 行编排，**却埋在路由模块里**" —— 而**甲-4a 已经把它搬走了**。逐项实测：① 决策侧**已经全是纯函数**（`backgroundGap` / `applyArchive` / `needsCompaction` / `largeGapResult`）；② `executeFill()` 想要的"唯一落盘点"实测有 **10 个**、分布在 **5 个串行依赖的阶段**（`setProgress` → `backgroundArchive` → 重读 `background` → `backgroundCompact` → 重读 → `backgroundMerge`，外加 `writeArchiveDelta` 与 3 处 `writeAutoBackup`）—— 每一段都**重读上一段写出的东西**。把它收成"唯一落盘点"不是重构，是**把串行链压平**，会改变行为。③ 它想保护的那条编排不变式（"冷归档不许抢在闸门之前"）**已经**被行为测试钉住（`test/jump-gate.test.mjs` 的「被拒的那一趟一个字节都不许改文件」）。⇒ 清单那句"编排不变式从注释升格为纯函数单测，**这比省行数重要**"我同意，但那个升格**已经完成了**。
+>
+> 716. **甲-6 第 1 步：`useNotesCollection`（笔记列表 + 分页 + 回收站）搬出 `NotesView`。** `NotesView` **1,337 → 1,173 行（−164）**；新 hook **205 行**；⚠️ `client.js` 总量 **7,312 → 7,383（+71）** —— **单文件约束下抽 hook 不减文件**，减的是**作用域**（`NotesView` 从此只剩"渲染 + 接线"）。
+>      **先量边界再动笔**（实测 2026-10-03）：9 份状态 + 2 个票号守卫 + 7 个回调自成一簇；`setNotes`/`setNotesTotal`/`setPageNext`/`setNotesHasMore`/`setCursors`/`setTrash*` 的**每一个**使用点都在簇内 ⇒ **只有 `setLoading` 漏到外面**（落点加载器 `refresh()` 的 `Promise.all` 也要用它）⇒ hook 把它作为**唯一逃生口**返回，并在注释里写明"新增第二个逃生口之前先问一句：那个 setter 是不是该连它的逻辑一起搬进来"。
+>      ⭐ **抽出来顺带消掉了一条"位置也是语义"的约束**：`reloadNotesPage` 从前**必须**紧挨着 `applyPage` 定义（`setTrashed`/`runPurge` 要用它，而 `const` 不能先用后定义 ⇒ TDZ）。hook 把它**返回**出去之后，定义顺序不再是语义 —— 那段 3 行的警告连同它的理由一起删掉了（**这是唯一被允许的整段差异**，等价性脚本里显式登记为 `SANCTIONED_GONE`：若哪天它又回来，说明有人把函数搬回了组件体内）。
+>      ⚠️ **另一条 TDZ 是新引入的**：hook 要用 `setNotice`，所以调用点必须排在 `const [notice, setNotice]` **之后** —— 已写进注释（本文件第 N 次踩"定义顺序也是语义"）。
+>      **证据**：全量 **821/821/0**（`client-runtime-notes.test.mjs` 等 mini-React 用例真的驱动了翻页、回收站、彻底删除）。**等价性核对**（`_equivalence-ji6a.mjs`）：7 个回调逐行一致（只允许两处登记在案的差异：`book.bookId` → `bookId` 的改名，以及 `reloadNotesPage` / `loadPage` 的**依赖数组多了一个 `setNotice`** —— hook 内部用它报错，依赖必须如实列出）；`NotesView` 内簇内标识符残留 **0 处**（真的搬走了，不是复制）。
+>      ⚠️ **过程上的一处失误**：第一次提交时等价性脚本**还是红的**（我只登记了 `SANCTIONED_GONE` 那段，漏了依赖数组那两行）—— 虽然当时已判断差异是良性的，但"脚本红着就提交"是错的：**登记差异必须在提交之前完成**，否则脚本就失去意义。脚本本身也犯了一个错（登记的行内容没带缩进 ⇒ `===` 比不上），已改用 `trim()` 比对。
+>
+> 717. **甲-6 第 2 步：`useDraftEditor`（编辑区 + 草稿列表 + 保存/落盘/提交/丢弃/抓取）搬出 `NotesView`。** `NotesView` **1,173 → 815 行（−358）**（两步合计 **1,337 → 815，−522**）；新 hook **407 行**（含一段长头注：这一簇的来龙去脉值得留在入口）；⚠️ `client.js` **7,383 → 7,459（+76）**。
+>      **边界实测**（先量再动笔）：6 份状态 + 1 个票号守卫 + 9 个回调（`commit` 57 行、`grabSelection` 36 行、`save` 29 行、`persist` 27 行）+ `dirty` 派生值。`setDrafts` / `setActive` / `setSuggested` / `setAutosaveFailed` / `draftsGuard` **完全自封**。
+>      ⭐ **把 `grabSelection` 一起搬进来**（它写的是编辑区、抓完立刻 `persist()`）—— 否则它会成为第 5 个逃生口。
+>      ⚠️ **两个 hook 的依赖是单向的**：`useDraftEditor` 接收 `refreshNotes`（`commit` 写完笔记要重取首屏），反过来 `useNotesCollection` 不知道草稿。调用顺序因此被 TDZ 钉死：`setNotice` → `useNotesCollection` → `useDraftEditor`，已写进注释。
+>      ⚠️⚠️ **我在这里犯了三个错，全部记下来**（都不是"手滑"，是判断错）：
+>        ① **逃生口数错了**：我断言"`grabSelection` 搬进来就只剩 2 个"，**漏了 JSX 里那四个 `onChange` 直接写 `setExcerpt`/`setThought`/`setReply`/`setTagsText`** —— 更直接的一条写入路径。全量 **7 红**（`ReferenceError`）才发现。**教训：数逃生口要扫"标识符的使用点"，不能只扫"逻辑回调里谁写它"。**
+>        ② **把 old/new 弄反**，一次编辑本意是删除、实际插入了重复声明，`node --check` 直接 `SyntaxError`。随后我**基于错误的现象做了错误的诊断**（认定"hook 里那三块是插入的重复"），**又删错了一次** —— 删掉的是 hook 自己的副本。真凭据其实就在眼前：那份的依赖数组写着 `[bookId, …, setNotice]`（hook 的口径），而 `NotesView` 里那份写 `[book.bookId, …]`。**教训：改代码前先看"哪一份属于哪个作用域"，不要靠行号相邻猜。**
+>        ③ **脚本写文件时把行尾统一成了 CRLF**，而 `lib/client.js` 是 **LF** ⇒ 整文件 7,459 行全部"变更"，且 `test/client.test.mjs:1169` 那条 `source.indexOf('.drc-root {\n  display: flex')` **字面量匹配**当场变红（它是全文唯一能发现这件事的守卫 —— 一条"没打算当哨兵"的守卫当了哨兵）。**教训：脚本写仓库文件必须显式保持行尾；`edit` 工具会保持，`writeFileSync` 不会。**
+>      **证据**：全量 **821/821/0**（`client-runtime-handoff` / `-notes` / `-nav` / `-review-fixes` 里 12+ 条用例真的驱动了起稿、保存草稿、脏了先问、自动保存失败标记、视图记忆）。`NotesView` 内簇内标识符残留 **0 处**（`setExcerpt` 等四处是 JSX 的 `onChange`，走逃生口）。
+>
+> 718. **甲-6 第 3 步（上）：`useTrashActions` + `useSessionSend`。** `NotesView` **815 → 647 行（−168）**（三步合计 **1,337 → 647，−690**）；两个新 hook 分别 **96 / 150 行**（含头注）；`client.js` **7,459 → 7,522（+63）**。
+>      · **`useTrashActions`**（进回收站 / 恢复 / 彻底删除）：三件事共用一条边界，因为它们的**善后完全一样** —— 都不改笔记文件里已有的字节，都只重取笔记列表与回收站两样，都**不该**把读者的翻页位置弹回第一页（所以用 `reloadNotesPage()` 而非 `refresh()`）。逃生口 2 个（`purgeTarget` + setter：确认条要读它、取消要清它）。
+>      · **`useSessionSend`**（发到会话，110 行的单块）：依赖虽多（补齐前文记忆 / 绑定以服务端为准 / 三条降级路径 / 交接）但**全部来自 props**，只暴露一个 `sendToSession`。它是本插件"最该早做对"的那件事，头注里写明了它**不是**"把文字塞进输入框"那么简单：补齐是阻塞的但失败不拦聊天、补齐结果必须三态留住。
+>      ⚠️ **顺序仍被 TDZ 钉死**：回收站动作要用 `reloadNotesPage`/`loadTrash`（hook 1），发到会话要用 `active`/`excerpt`/`thought`（hook 2）⇒ 两个都排在它们之后。四个 hook 的依赖是**一条单向链**：`useNotesCollection` → `useDraftEditor` → { `useTrashActions`, `useSessionSend` }。
+>      ⚠️ **这一步我做对了上次做错的三件事**：全程只用 `edit` 工具（LF 保住，实测 CRLF=0）；逃生口是**先 grep 标识符使用点**数出来的（`sendToSession` 2 处 = 声明 + JSX；`purgeTarget` 6 处、`setPurgeTarget` 5 处 ⇒ 恰好 2 个逃生口），不是凭印象断言的；每删一块前先确认"这一份属于哪个作用域"。
+>      **证据**：全量 **821/821/0**（含「发到会话：绑定的是别的会话时必须交接并跳过去」「宿主不能跳转时如实降级，不假装发过去了」「进回收站/恢复/彻底删除都不许把读者弹回第一页」等）。`NotesView` 内残留的 9 处引用全是 hook 调用与 JSX 的合法使用点。
+>      🔍 **顺带发现一处死代码**：`exporting` / `setExporting` 在 **`NotesView` 内**声明后从未被使用（该作用域内各 1 处 = 声明本身）。⚠️ 但**同一对名字在另一个组件里是活的**（同文件另有一份声明，被"导出背景与全部笔记"那颗按钮读着）—— 我第一版写成了"全文各 1 处"，**是错的**，已在第 3 步（下）更正。**教训：量"死代码"必须先划定作用域边界，跨组件的同名标识符会骗过整文件的 grep。**
+>
+> 719. **甲-6 第 3 步（下）：`useBookLocation` —— 落点与"全量重取"搬出 `NotesView`；甲-6 收口。** `NotesView` **647 → 576 行**（甲-6 全程 **1,337 → 576，−761（−57%）**）；新 hook **150 行**；`client.js` **7,522 → 7,544（+22）**。
+>      ⭐ **`refresh()` 一起搬进去了**，这是本步真正值钱的地方：它要做的事就是"草稿 + 笔记 + 落点"三样一起重读，而 `/location` 是它**唯一自己发起、也唯一由它的票号罩住**的请求（另外两条各自在 `useNotesCollection` / `useDraftEditor` 内部验票）。把它放在资源旁边，"谁发的谁验票"这条规矩才不用跨作用域追。**行为逐字不变**（函数体原样搬，只把 `book.bookId` 收成 `bookId`、把 `setNotice`/`setBusy` 加进依赖数组）。
+>      ⚠️ 我原先设想的"验票权下放到资源自己"**没有做**：那需要**两个** `useLatestGuard` 实例，因为它的票号是**单调递增**的 —— 同一个守卫连开两张票，第一张立刻失效（`refresh` 的收尾就会永远不再执行）。那属于**另一件事**，不该混进搬迁里。
+>      · 顺手清掉 `NotesView` 内那份未被使用的 `exporting` / `setExporting`（见上一段的更正）。
+>      ⚠️ **甲-6 收口后的真实形状**：`NotesView` 576 行里只剩 **3 份状态**（`tab` / `busy` / `notice`）、**0 个 `useCallback`**，其余约 520 行**全是 JSX**。⇒ 清单原本估的"`NotesView` → ~500 行"**基本达成**（差的那点在 JSX 上，而那要靠拆组件、不是抽 hook）。
+>      ⚠️ **诚实的总账**：`client.js` **7,312 → 7,544（+232）**。五个 hook 依次是 `useNotesCollection`(L4094) / `useDraftEditor`(L4326) / `useTrashActions`(L4746) / `useSessionSend`(L4837) / `useBookLocation`(L4988)，依赖是**一条单向链**。⇒ **单文件约束下抽 hook 买的全是作用域，行数只增不减** —— 这与"守卫只增不减"是同一类事实，值得写进设计文档，别让下一个人以为重构能省行数。
+>      **证据**：全量 **821/821/0**；`CRLF=0`（`lib/client.js` 是 LF，全程只用 `edit` 工具）；`NotesView` 内已无任何簇内逻辑。
+>
 > **v3.12 修订（读者两处更正：恢复「文本类型」的条目侧重指导；收回重判、改回「只写一次 + 每批注入」）**
 >
 > 700. **恢复「给各条目一点侧重」（读者更正，我读错了靶子）**。上一轮按"模糊化"把这一句从**四处提示词**里删了（格式块 / 规则 16 /「还没判过」分支 / 重判提示词）。读者的更正：**模糊化的靶子是「剧情」，不是"指导条目"** —— 他给的省略号示例只是在说"一句模糊的作品简介该长什么样"，从没说这一节不该指导后面几节怎么写。而它**每批都注入**，删掉侧重等于让人物 / 世界观 / 分线失去写法依据。已四处恢复 + 两处注释 + `design.md` ⓪。
