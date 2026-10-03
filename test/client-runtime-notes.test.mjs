@@ -931,3 +931,95 @@ test('发笔记（运行时）：补齐结果三态真的接进了那句话，�
   assert.deepEqual(handed.opened, ['session-xyz'], '要真的打开目标会话')
   assert.deepEqual(handed.handed.map((payload) => payload.sessionId), ['session-xyz'], '要真的把这段文字交接过去')
 })
+
+//#region ⑦ 发笔记送的是「读者正在看的那一章」（2026-10-03 体检）
+// 取代：无（这条路径从前**没有**任何守卫 —— 两侧测试各钉了一半契约，见下）。
+//#endregion
+
+test('发笔记（运行时）：`atChapter` 必须是**读者正在看的那一章**，不是编辑区那条草稿的章号', async () => {
+  // ⚠️ 体检**复现**过（并发/时序评审的探针）：`useSessionSend` 从前取 `active?.chapterIndex`
+  //    —— 而 `active` 是**笔记编辑区里那条草稿**，可被「接着写」/会话恢复换成**任意旧草稿**。
+  //    服务端把它当读者的阅读位置**落盘**（`memory-pipeline.js` 的 `setProgress`）⇒
+  //    ① 模型被投喂**读者没读过的整章**；② 倒退过滤水位线失效；③ 补齐把未读章写进
+  //    `background.md`（文档称不可逆）。触发是一条普通序列：第 430 章起稿 → 回第 3 章读
+  //    → 点那条草稿的「发到会话去聊」。
+  //
+  // 可证伪：把 `atChapter` 改回 `active?.chapterIndex` ⇒ 第一条断言红（实测过）。
+  const { react, render, act, internals } = await runtime()
+  const { fetch, calls } = makeFetch([
+    ['/background/fill', () => json({ ok: true, covered: { first: 1, last: 30 } })],
+    ['/progress', () => json({ ok: true, progress: { chapterIndex: 2, charOffset: 0 }, binding: { sessionId: 'session-abc' } })],
+    ['/discussions', () => json({ ok: true })],
+    ...firstScreen(),
+  ])
+  await withFetch(fetch, async () => {
+    render(react.createElement(internals.NotesView, {
+      book: BOOK,
+      sessionId: 'session-abc',
+      // 编辑区挂着**第 430 章**那条旧草稿（「接着写」/会话恢复就是这样）
+      activeDraft: { draftId: 'd1', chapterIndex: 429, chapterTitle: '第430章', excerpt: '', thought: '' },
+      // 而读者**正在看**第 3 章
+      currentChapter: 2,
+      // ⚠️ 必须给：宿主没把输入框接口交出来时，面板会**提前返回**（"请手动复制到会话"），
+      //    那样这一趟根本不会发 `/background/fill` ⇒ 下面的断言全成了空转。
+      inputActions: { setDraft: () => {} },
+      onBack: () => {},
+    }))
+    let tree = await settle({ act })
+    tree = act(() => findNode(tree, (node) => node.props?.id === 'drc-note-excerpt')
+      .props.onChange({ target: { value: '一段摘抄' } }))
+    tree = act(() => findNode(tree, (node) => node.props?.id === 'drc-note-thought')
+      .props.onChange({ target: { value: '我的感想' } }))
+    tree = act(() => button(tree, '① 发到会话去聊').props.onClick())
+    await settle({ act })
+  })
+
+  const fill = calls.find((call) => call.url.includes('/background/fill'))
+  assert.ok(fill !== undefined, `这一趟要真的去补齐过 —— 否则下面的断言是空转：${calls.map((c) => c.url).join(' | ')}`)
+  const body = JSON.parse(fill.options.body)
+  assert.equal(
+    body.atChapter,
+    2,
+    '必须送「读者正在看的那一章」（这里草稿是第 430 章、读者在第 3 章）—— 送草稿的章号 = 剧透洞本身',
+  )
+})
+
+test('发笔记（运行时）：`skipped`（没有缺口）也要说出这一趟**归档真的发生了**', async () => {
+  // ⚠️ 体检**复现**过：`memoryFillClause` 的 `skipped` 两条出口在算 `suffix` **之前** `return`
+  //    ⇒ 读者看到「前文记忆本来就是最新的，没有缺口。」，**而归档照跑、压缩照落盘**。
+  //    服务端明确写着"没有缺口这一趟也要报冷归档"，同一个病 `test/jump-gate.test.mjs`
+  //    的 P2 守卫治过一次，只是出口不同。
+  //
+  // 可证伪：把那两条 `skipped` 出口挪回 `const suffix` 之前 ⇒ 本用例红（实测过）。
+  const { react, render, act, internals } = await runtime()
+  const { fetch } = makeFetch([
+    ['/background/fill', () => json({ ok: true, skipped: true, archived: { moved: 12 } })],
+    ['/progress', () => json({ ok: true, progress: { chapterIndex: 300, charOffset: 0 }, binding: { sessionId: 'session-abc' } })],
+    ['/discussions', () => json({ ok: true })],
+    ...firstScreen(),
+  ])
+  let tree = null
+  await withFetch(fetch, async () => {
+    render(react.createElement(internals.NotesView, {
+      book: BOOK,
+      sessionId: 'session-abc',
+      activeDraft: null,
+      currentChapter: 300,
+      inputActions: { setDraft: () => {} },
+      onBack: () => {},
+    }))
+    tree = await settle({ act })
+    tree = act(() => findNode(tree, (node) => node.props?.id === 'drc-note-excerpt')
+      .props.onChange({ target: { value: '一段摘抄' } }))
+    tree = act(() => findNode(tree, (node) => node.props?.id === 'drc-note-thought')
+      .props.onChange({ target: { value: '我的感想' } }))
+    tree = act(() => button(tree, '① 发到会话去聊').props.onClick())
+    tree = await settle({ act })
+  })
+  const text = treeText(tree)
+  assert.ok(text.includes('没有缺口'), `这一趟确实是 skipped：${text.slice(0, 400)}`)
+  assert.ok(
+    text.includes('归档'),
+    `⚠️ "没有缺口"不等于"什么都没发生" —— 这一趟归档了 12 条，必须说出来：${text.slice(0, 400)}`,
+  )
+})

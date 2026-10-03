@@ -19,11 +19,12 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path'
 
 import {
+  isGroupedSection,
   needsCompaction,
   parseBackground,
   renderBackgroundForPrompt,
 } from '../lib/host/background.js'
-import { buildCompactPrompt, COMPRESSIBLE_SECTIONS, createCompactor, validateCompaction } from '../lib/host/compact.js'
+import { buildCompactPrompt, COMPRESSIBLE_SECTIONS, createCompactor, renderOneSectionMarkdown, validateCompaction } from '../lib/host/compact.js'
 import { createSubagentRunner } from '../lib/host/subagent-run.js'
 import { createLibrary } from '../lib/host/library.js'
 import { BOOK, call, importBook, makeDir, startServer } from './helpers/server.mjs'
@@ -1485,6 +1486,57 @@ test('自适应重试（3.0 ③a）：重试**没带来更好的结果**⇒ 保�
   } finally {
     await s.close()
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('压缩提示：分组节的尺子不许把它说成"扁平条目"（形状跟注册表走）（2026-10-03 体检）', () => {
+  // ⚠️ **压缩是整份重写文件** ⇒ 它在提示词里教什么形状，压缩后就是什么形状。
+  //    这里曾经写着「人物关系」= "**扁平条目**，一条写一对人（`甲 ↔ 乙：…`）" —— 而
+  //    注册表 `grouped: true`、**同一个文件里**另一处又写着"人物关系的主体是**一对人**
+  //    （`### 甲 × 乙`）"。两条口径打架，代价具体而硬：
+  //      · 模型照"扁平"写 ⇒ 输出里没有 `###` 主体 ⇒ **「保主体」判 `COMPACT_LOST_ENTITIES`**
+  //        ⇒ 整批丢弃 ⇒ 这一节**永远压不掉**（只增不减、无上限）；
+  //      · 与补齐侧格式块当时教平铺是**同一个根因**：一个概念两个定义点。
+  for (const name of COMPRESSIBLE_SECTIONS) {
+    if (!isGroupedSection(name)) continue
+    const prompt = buildCompactPrompt({
+      bookTitle: '测试书',
+      section: name,
+      sectionMarkdown: `## ${name}\n### 甲 × 乙\n- 一条`,
+    })
+    assert.doesNotMatch(
+      prompt,
+      /扁平条目/,
+      `「${name}」是分组节（注册表 grouped=true），压缩提示不许把它说成"扁平条目"`,
+    )
+  }
+})
+
+//#endregion
+
+//#region 素材形状的往返契约
+
+test('压缩的素材/成品必须是 `parseBackground` 能**原样读回**的形状（2026-10-03 体检：条目从前不带 `- `）', () => {
+  // ⚠️ `renderOneSectionMarkdown` 的文档注释写着"只用于切分节作业的素材/复核成品 ——
+  //    **输出会被 `parseBackground` 原样读回**"，而它从前是 `lines.push(entry)`
+  //    （**不带 `- ` 前缀**），`parseBackground` 又只认 `- ` 开头的行 ⇒ 契约当场失效：
+  //    送给压缩模型的素材形状是错的，模型"照材料的形状回"时那些行**不是条目** ⇒
+  //    整条静默消失，而五道校验全过（保主体只比主体名、只要求变小）、`ok: true`、
+  //    `savedChars` 照报 —— 这是唯一"删掉内容且不搬进任何归档"的路径。
+  //    这条守卫钉**往返**：渲染出来再解析回去，条目必须一条不少、一条不多、一字不差。
+  //    ⚠️ 别改成"数条数"：压缩本来就要**合并**条目（读者族才需要"净减少即失败"）。
+  for (const name of COMPRESSIBLE_SECTIONS) {
+    const doc = {
+      sections: { [name]: ['第1章 散着的一条。', '第2章 又一条。'] },
+      groups: isGroupedSection(name) ? { [name]: { 甲: ['第3章 分组里的一条。'] } } : {},
+    }
+    const text = renderOneSectionMarkdown(doc, name)
+    assert.match(text, /^- /m, `「${name}」：条目必须带 "- " 前缀（否则 parseBackground 读不回来）`)
+    const back = parseBackground(text)
+    assert.deepEqual(back.sections[name], doc.sections[name], `「${name}」：散条目必须原样读回`)
+    if (isGroupedSection(name)) {
+      assert.deepEqual(back.groups[name], doc.groups[name], `「${name}」：分组条目必须原样读回`)
+    }
   }
 })
 

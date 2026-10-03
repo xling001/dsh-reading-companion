@@ -585,15 +585,30 @@ test('守则：与"有没有背景认识"无关——它必须逐字节稳定，
 
 test('缺口：前文末日是当前章的前一章（当前章由窗口全文投喂，不需要梗概）', () => {
   // 还没建过任何认识 → 缺口是 1..当前章
-  assert.deepEqual(backgroundGap(null, 4), { from: 1, to: 4 })
+  // ⚠️ **`chapters` 是契约的一部分**（2026-10-03 体检）：客户端两处读它（面板"缺口 N 章"、
+  //    补齐循环的 `remaining`），而它从前只在 409 那条路上有 ⇒ 成功体里读到 `undefined`，
+  //    面板印出字面「缺口 undefined 章」。形状钉在这里，两个定义点就不许再漂。
+  assert.deepEqual(backgroundGap(null, 4), { from: 1, to: 4, chapters: 4 })
   // 已覆盖到第 3 章、读者在第 6 章（index 5）→ 缺口 4..5
-  assert.deepEqual(backgroundGap({ first: 1, last: 3 }, 5), { from: 4, to: 5 })
+  assert.deepEqual(backgroundGap({ first: 1, last: 3 }, 5), { from: 4, to: 5, chapters: 2 })
   // 已经没有缺口
   assert.equal(backgroundGap({ first: 1, last: 5 }, 5), null)
   // 第一章：前面什么都没有
   assert.equal(backgroundGap(null, 0), null)
   // 非法进度
   assert.equal(backgroundGap(null, -1), null)
+})
+
+test('缺口对象**只有一个形状**：键集必须与 409 那条路一致（2026-10-03 体检）', () => {
+  // ⚠️ 这个对象有过**两个定义点**：`backgroundGap`（成功体，`{from,to}`）与
+  //    `memory-pipeline.js` 的 `largeGapResult`（409 弹窗，`{from,to,chapters}`）。
+  //    客户端在**两处**读 `.chapters` ⇒ 成功体那两条路印出**字面「缺口 undefined 章」**，
+  //    而「还剩 N 章」永不显示。两侧测试各固化了一半契约，834 条全绿也抓不到。
+  //    这条守卫钉**键集**（不是值）：409 那一侧的键集由 `jump-gate.test.mjs` 的
+  //    `deepEqual` 钉着 ⇒ 两边一起把形状锁成同一个。
+  const g = backgroundGap({ first: 1, last: 3 }, 10)
+  assert.deepEqual(Object.keys(g).sort(), ['chapters', 'from', 'to'])
+  assert.equal(g.chapters, 7, 'chapters = 区间长度（4..10）')
 })
 
 test('缺口：措辞必须把"我还没纳入"与"不能剧透"分开（否则它会拒答读者已读的章）', () => {
@@ -888,7 +903,7 @@ test('已读窗口：更早的前文由背景认识代表，且缺口如实报�
     // 还没建过背景认识。
     let readWindow = f.library.collectReadWindow(bookId, BUDGET)
     assert.equal(readWindow.backgroundCovered, null)
-    assert.deepEqual(readWindow.memoryGap, { from: 1, to: 4 }, '应当报告 1..4 的缺口')
+    assert.deepEqual(readWindow.memoryGap, { from: 1, to: 4, chapters: 4 }, '应当报告 1..4 的缺口')
     assert.match(readWindow.backgroundText, /还没有建立/)
 
     // 把 1..4 纳入认识后，缺口消失，认识进入段落。

@@ -429,9 +429,11 @@ test('背景认识：GET 带 `atChapter` 时缺口按"正在看的章"算（进�
     assert.equal(plain.body.gap, null, '不带 atChapter：按落盘进度（第 1 章）算，没有前文')
 
     const at = await call(`${s.base}/books/${bookId}/background?atChapter=149`)
-    // ⚠️ 只读那条路回的是 `backgroundGap` 的原样 `{from,to}` —— 带 `chapters` 的是
-    // 补齐那条路的 409（那边为了给弹窗报"共几章"才补上这个字段）。
-    assert.deepEqual(at.body.gap, { from: 1, to: 149 }, '带 atChapter：按正在看的章算')
+    // ⚠️ **两个形状已经合成一个**（2026-10-03 体检）：从前这里回的是 `backgroundGap` 的
+    // 原样 `{from,to}`，而带 `chapters` 的只有补齐那条路的 409 ⇒ 客户端两处读 `.chapters`
+    // 都拿到 `undefined`（面板印出字面「缺口 undefined 章」）。现在 `chapters` 由
+    // `backgroundGap` 自己给，**两个出口同一个形状**。
+    assert.deepEqual(at.body.gap, { from: 1, to: 149, chapters: 149 }, '带 atChapter：按正在看的章算')
 
     // ⚠️ 只算不写：这条只读路径**不该**把进度推走（落盘只发生在补齐那条路上）。
     const again = await call(`${s.base}/books/${bookId}/background`)
@@ -482,7 +484,10 @@ test('补齐：大缺口 + 发笔记那一路（没有 ask）→ 自动补**全�
     // 于是客户端的补齐循环到此为止 —— **绝不顺手把整段缺口补掉**（那正是打底的本意）。
     assert.equal(res.body.partial, false, '循环必须停在打底这一批')
     // 而"还剩多少"由响应里的 gap 如实回报，客户端才说得出一句真话。
-    assert.deepEqual(res.body.gap, { from: 31, to: 149 })
+    // ⚠️ **这句话从前是假的**（2026-10-03 体检）：下面那条断言只钉了 `{from,to}`，
+    //    而客户端读的是 `gap.chapters` ⇒ "还剩 119 章"永远说不出来。现在两个键都在，
+    //    注释与断言第一次一致。
+    assert.deepEqual(res.body.gap, { from: 31, to: 149, chapters: 119 })
 
     // 再调一次：缺口变成 31–149，而"全书前 30 章"已经纳入过 → 夹完是**空缺口**。
     // 那种情况**不该硬造一次调用**，而要如实回报"只剩手动补"。

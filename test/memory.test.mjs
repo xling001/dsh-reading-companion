@@ -22,9 +22,15 @@ import {
   createMemoryFiller,
   extractText,
   looksTruncated,
+  malformedGroupedSections,
   memoryBudgetOverrun,
 } from '../lib/host/memory.js'
-import { FILL_INCREMENTAL_SECTIONS, parseBackground } from '../lib/host/background.js'
+import {
+  FILL_INCREMENTAL_SECTIONS,
+  isGroupedSection,
+  parseBackground,
+  renderExistingForFill,
+} from '../lib/host/background.js'
 
 test('补齐提示词：长度上限（人物关系 80 字、其余 40 字），且明写不重写', () => {
   const prompt = buildMemoryPrompt({
@@ -156,7 +162,7 @@ test('补齐提示词：两步式（v1.66），且**不**强制龙套进人物�
   )
 })
 
-test('补齐提示词：「文本类型」第一批只写**形态**；之后按它写，且**可以申请重判**（2026-10-03 放宽）', () => {
+test('补齐提示词：「文本类型」只判**两件事**（类型 + 主视角）；之后按它写、不许重判（2026-10-03 收窄）', () => {
   const base = {
     bookTitle: '书',
     samples: [{ index: 0, title: '一', text: '正文' }],
@@ -165,19 +171,22 @@ test('补齐提示词：「文本类型」第一批只写**形态**；之后按�
   }
   const first = buildMemoryPrompt({ ...base, hasTextTypeSection: false })
   assert.match(first, /我\*\*还没判过\*\* ⇒ \*\*这一批请写在最前面\*\*/, '第一批要它判断文本类型')
-  // 内容要点（读者 2026-10-03 定的形状）：**只写形态** —— 类型 / 人称 / 写作方式 / 主角是谁；
-  // 剧情用省略号带过，**不对故事走向与内容下判断**（减少"误判剧情导向"带来的干扰）。
-  assert.match(first, /属于什么类型/, '① 类型（武侠？cp？男女频？）')
-  assert.match(first, /第几人称/, '② 人称与视角')
-  assert.match(first, /写作方式/, '③ 写作方式')
-  assert.match(first, /主角是谁/, '④ 主角是谁')
-  assert.match(first, /省略号/, '⑤ 剧情只用省略号带过（模糊化的落点）')
+  // 内容要点（读者 2026-10-03 **收窄**）：只判**两件事** —— 类型 + **主视角是谁**。
+  // ⚠️ 从前这里是四项（类型 / 人称 / 写作方式 / 主角是谁）+ 侧重，其中"**有没有 cp？**"
+  //    那一问是**实测的祸首**：模型照问作答，在一本女主很晚才出现的书上写下
+  //    "有 cp（孟奇 ↔ 江芷微等同伴）" —— 而这一节**只写一次、每批都注入**，
+  //    判错会被永久带下去。"人称 / 写作方式"与「文风（只写一次）」重复，一并删掉。
+  assert.match(first, /属于什么类型/, '① 类型')
+  assert.match(first, /主视角是谁/, '② 主视角（不是"主角是谁"：POV 判得准，"谁是主角"早期判不准）')
+  assert.match(first, /省略号/, '③ 剧情只用省略号带过（模糊化的落点）')
+  assert.doesNotMatch(first, /有没有 cp/, '⚠️ 不许再问 cp —— 读不出来的问题必然被猜，而它每批都注入')
+  assert.doesNotMatch(first, /第几人称|写作方式/, '⚠️ 删掉与「文风」重复的两项（顺带减提示词负载）')
   // ⚠️ 不许写长也不许死板：读者："元判断应该简短一些……不用可以强调"
-  const rule = first.split('\n').find((line) => line.includes('「文本类型」只写'))
+  const rule = first.split('\n').find((line) => line.includes('「文本类型」只判两件事'))
   assert.ok(rule !== undefined, '找不到那条要求 —— 提取逻辑可疑')
   assert.ok(
-    rule.length < 260,
-    `这条要求太长了（${rule.length} 字）—— 产出的「文本类型」放宽到 200 字，但**提示词里这条要求本身**要保持紧凑，不许跟着膨胀`,
+    rule.length < 330,
+    `这条要求太长了（${rule.length} 字）—— 「文本类型」本身收窄到 40 字，提示词里这条要求也不许膨胀`,
   )
 
   const later = buildMemoryPrompt({ ...base, existingMarkdown: '## 文本类型\n- 原始判断。', hasTextTypeSection: true })
@@ -243,11 +252,19 @@ test('元判断：「文本类型」不许写成"只记哪几个人"的范围限
   assert.match(prompt, /后面出现的重要角色照立/, '立卡范围由逐人判断，不预先限定')
   assert.match(prompt, /省略号/, '剧情只用省略号带过（不替整本书定调）')
   assert.match(prompt, /不对故事走向与内容下判断/, '明确"不评判故事走向与内容"')
+  // ⚠️ **2026-10-03 读者拍板：侧重从「文本类型」搬进提示词的固定块（第 20 条）。**
+  //    搬家的理由：这条指令的消费者只有**补齐子代理**，而「文本类型」是 `family: 'full'`
+  //    —— **每个聊天轮次都整条注入** ⇒ 放在文件里等于让聊天为一份用不上的指令**永久付费**，
+  //    还叠上"只写一次 ⇒ 错一次永久定向"的放大器。
+  //    ⇒ "侧重必须存在"这件事**没有变**（读者同一天更正过：模糊化的靶子是剧情，
+  //    不是"指导条目"），变的是**它住在哪** —— 现在钉的是固定块里那一条。
   assert.match(
     prompt,
-    /再给各条目一点侧重/,
-    '必须保留"给各条目一点侧重"（2026-10-03 读者更正：模糊化的靶子是剧情，不是指导条目）',
+    /各节该往哪个方向用力/,
+    '必须保留"给各节定用力方向"（2026-10-03 读者更正：模糊化的靶子是剧情，不是指导条目）',
   )
+  assert.match(prompt, /只是用力方向，不是例外/, '⚠️ 要明写从属关系：指导不许凌驾于原则之上')
+  assert.doesNotMatch(prompt, /再给各条目一点侧重/, '⚠️ 它已经不在「文本类型」里了（搬进固定块第 20 条）')
   // ⚠️ 这一条**从前是空的**（记下来，别重犯）：子代理加的是
   //    `assert.ok(!prompt.includes('各条目一点**侧重**'))`，而原文写的是
   //    `**再给各条目一点侧重**` —— `**` 在**整句外面**，那个字符串**从来没出现过**
@@ -637,6 +654,153 @@ test('补齐提示词：人物写弧线、只记以后会用到的、行首章�
   assert.match(prompt, /② 再回头读「人物」这一节/, '第②步才是人物关系长出来的地方')
   // ⑥ 行首章号必须是**真正依据**的那一章（实测某本书把它填成别的章，合并/取代都会指不准）
   assert.ok(prompt.includes('真正依据'), '行首章号必须说"是你这条真正依据的那一章"')
+})
+
+test('「人物状态」收窄到两项 + 必须带章号；名单由代码给（2026-10-03 读者拍板）', () => {
+  const base = {
+    bookTitle: '书',
+    samples: [{ index: 0, title: '一', text: '正文' }],
+    fromChapter: 1,
+    toChapter: 1,
+  }
+  const prompt = buildMemoryPrompt(base)
+  // ① **字段收敛**：从"当前处境 / 立场 / 目标 / 在哪条线上"砍到**两项**。
+  //    "要干什么"是**动机**、归「人物」；"在哪条线上"指的是**分线**，而分线是
+  //    **读者族、AI 根本看不到** ⇒ 对 AI 无意义。两条都是**白付注入预算**。
+  assert.match(prompt, /此刻在哪 \+ 站在哪边/, '只写这两项')
+  assert.doesNotMatch(prompt, /身处哪条线上/, '⚠️ 旧口径不许回来（AI 看不到分线）')
+  assert.match(prompt, /他打算干什么"是「人物」的事/, '动机归「人物」，要说清分工')
+  // ② **≤30 字**（原 60）。
+  assert.match(prompt, /≤30 字/, '一条 ≤30 字')
+  // ③ ⚠️ **必须带章号**：注入侧倒退时"没章号 ⇒ 一律丢"（`background.js`），
+  //    而代码注释记录了实测"状态行常常没章号" ⇒ 不带就会在倒退时**整批被丢**。
+  assert.match(prompt, /行首必须带/, '行首章号要在这一节**就近**要求（别只靠全局第 1 条）')
+  // ④ **名单由代码给**：给了就点名，不给就退回兜底判据、不多说一句。
+  const named = buildMemoryPrompt({ ...base, stateSubjects: ['甲', '乙'] })
+  assert.match(named, /只写这些人的一行/, '给了名单就要说清"只写这些人"')
+  assert.ok(named.includes('甲、乙'), '名单本身要出现在提示词里')
+  assert.doesNotMatch(prompt, /只写这些人的一行/, '没给名单时不许凭空点名（首批还没有任何卡）')
+})
+
+test('格式块：每一节的示例形状必须与注册表一致（分组节必须有 `### 主体`）（2026-10-03 实测）', () => {
+  // ⚠️ **这条守卫防的是"同一个概念两个定义点"复发**：一节的形状原本有两处定义 ——
+  //    注册表的 `grouped`，和提示词格式块**教给模型的示例**。它们漂移过，代价是：
+  //    ① 「世界观」的示例教平铺 ⇒ 这一节永远不会分组；
+  //    ② 「人物关系」的示例教平铺 ⇒ 读者**照格式块写**的修正被 `validateUpdate` 拒收（`NO_SUBJECT`），
+  //       而注册表给它的理由白纸黑字写着"`###` 让每条关系有**可寻址的主体**，这正是「取代」能
+  //       指哪打哪的前提"。
+  //    ⭐ 实测（4/4 真实背景文件）：`## 人物关系` 的 `###` 数全是 **0**、条目全是平铺 ——
+  //    那正是**提示词教出来的**，不是模型不会分组。
+  const prompt = buildMemoryPrompt({
+    bookTitle: '测试书',
+    samples: [{ index: 0, title: '一', text: '正文' }],
+    fromChapter: 1,
+    toChapter: 1,
+  })
+  const lines = prompt.split('\n')
+  const start = lines.findIndex((line) => line.includes('按下面'))
+  const end = lines.findIndex((line) => line.trim() === '要求：')
+  assert.ok(start >= 0 && end > start, '找不到格式块的边界 —— 提取逻辑可疑')
+
+  const shown = new Map()
+  for (let i = start; i < end; i += 1) {
+    const m = /^## (.+)$/.exec(lines[i])
+    if (!m) continue
+    let j = i + 1
+    let hasHeading = false
+    while (j < end && !/^## /.test(lines[j])) {
+      if (/^### /.test(lines[j])) hasHeading = true
+      j += 1
+    }
+    shown.set(m[1].trim(), hasHeading)
+  }
+
+  for (const name of FILL_INCREMENTAL_SECTIONS) {
+    assert.notEqual(shown.get(name), undefined, `格式块里必须有「${name}」的示例`)
+    assert.equal(
+      shown.get(name),
+      isGroupedSection(name),
+      `「${name}」的示例形状与注册表不一致（注册表 grouped=${isGroupedSection(name)}，`
+      + `示例里${shown.get(name) ? '有' : '没有'} \`###\`）—— 形状只有一个定义点（注册表），示例必须跟它走`,
+    )
+  }
+})
+
+test('补齐侧：分组节在文件里是平铺时**当场提示归位**（断掉"一次坏批次永久教坏"的回路）', () => {
+  // ⚠️ 平铺回显会**自我强化**：子代理看到"这一节长这样"就接着写平铺 ⇒ 一次坏批次永久定型。
+  //    实测《一世之尊》的 `## 人物` 就是这么塌成平铺流水账、人物卡全空的。
+  const flat = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..41 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物',
+    '- `第4章` 真定：少林僧人。',
+    '- `第28章` 真定：与孟奇同行。',
+  ].join('\n'))
+  const text = renderExistingForFill(flat)
+  assert.match(text, /没有 `###` 主体/, '要说出这一节的形状坏了')
+  assert.match(text, /这一批请照 `### 主体` 分组写/, '要给出正确形状（不能只说"坏了"）')
+  // ⚠️⚠️ **不许叫它"把已有条目归位 / 重发一遍"**（2026-10-03 实测）：背景认识**只增不减**，
+  //    而合并**只在同一个桶里去重** —— 散行在 `sections`、分组在 `groups` ⇒ 同一句话
+  //    跨桶重发会**两份都留下、渲染出两次**（探针 `_probe-dedup.mjs` 复现过）。
+  //    第一版措辞就是"请把已有条目按主体归到 `### 主体` 下面"，那是个**会制造重复的指令**。
+  assert.match(text, /别把上面已有的条目重发一遍/, '必须明说别重发')
+  assert.doesNotMatch(text, /按主体归到/, '⚠️ 不许要求"把已有条目归位" —— 那正是制造重复的做法')
+
+  // 正常文件（有 `###`）不许出现这条提示 —— 否则每批都在喊狼来了。
+  const good = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..41 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物',
+    '### 真定',
+    '- `第4章` 少林僧人。',
+  ].join('\n'))
+  assert.doesNotMatch(renderExistingForFill(good), /没有 `###` 主体/, '形状正常时不许出现这条提示')
+
+  // ⚠️ **平级节**（「文本类型」`grouped=false`，一条一行）不许被当成坏的。
+  //    ⚠️ 夹具必须挑一个**在 `FILL_INCREMENTAL_SECTIONS` 里**的平级节 —— 第一版用的是
+  //    「文风（只写一次）」，它不在那个列表里 ⇒ `renderExistingForFill` 根本不渲染它
+  //    ⇒ 这条断言**空转**（变异电池第 ④ 项就是这么发现它是装饰的）。
+  const flatOk = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..41 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 文本类型',
+    '- 男频武侠，主视角是孟奇。',
+  ].join('\n'))
+  assert.match(renderExistingForFill(flatOk), /男频武侠/, '夹具要真的被渲染出来（否则断言空转）')
+  assert.doesNotMatch(renderExistingForFill(flatOk), /没有 `###` 主体/, '平级节平铺是正常的，不许误报')
+})
+
+test('补齐落盘：分组节写成平铺要**如实报**（报告，不是裁剪）（2026-10-03）', () => {
+  // ⚠️ 与 `memoryBudgetOverrun` 同一个口径：**条目照常落盘**（背景认识只增不减），
+  //    报出来只是让"形状坏了"这件事看得见 —— 否则读者只看到"人物卡空了"，不知道原因。
+  //    病根：`NO_SUBJECT` 只管"模型自己写记忆"那条路，**补齐这条路零结构校验**。
+  const flat = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..41 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物',
+    '- `第4章` 真定：少林僧人。',
+    '',
+    '## 世界观',
+    '- `第1章` 少林是名门正派。',
+  ].join('\n'))
+  assert.deepEqual(malformedGroupedSections(flat), ['人物', '世界观'], '按文件节序报出写坏的分组节')
+
+  const good = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..41 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物',
+    '### 真定',
+    '- `第4章` 少林僧人。',
+    '',
+    '## 文风（只写一次）',
+    '- 爱用短句。',
+  ].join('\n'))
+  assert.deepEqual(malformedGroupedSections(good), [], '正常文件（含平铺的平级节）一条都不许报')
 })
 
 //#endregion

@@ -22,6 +22,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { call, importBook, makeDir, startServer } from './helpers/server.mjs'
+import { createLibrary } from '../lib/host/library.js'
 
 const SESSION = 'sess-settings-0001'
 
@@ -304,6 +305,26 @@ test('配置契约：抽样默认值就是当初约定的那几个数', async ()
     assert.equal(win.previousChapterMode, 'tail')
   } finally {
     await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('设置：超长的 `exportDir` **不许被静默截断**（2026-10-03 体检：注释写着"不截断"，代码却在 `slice`）', () => {
+  // ⚠️ 被砍掉尾巴的路径指向的是**另一个目录**（前缀相同）⇒ 静默把文件导到别处，
+  //    而读者在界面上看到的还是那条完整路径。本函数自己的注释就写着这个判据：
+  //    "静默地把文件导到别处，比拒绝保存严重得多"。所以超长一律当**未设置**。
+  const dir = makeDir('set-toolong')
+  try {
+    const lib = createLibrary({ storageDir: dir, logger: { warn() {}, info() {} } })
+    lib.ensureDirs()
+    const tooLong = `C:\\${'x'.repeat(2000)}`
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({ exportDir: tooLong }), 'utf8')
+    assert.equal(lib.readSettings().exportDir, null, '超长当未设置，不许截成同前缀的另一个目录')
+
+    // ⚠️ 对照：正常长度照常读得出来 —— 别把这条修成"一律 null"（那就成了另一种静默丢失）。
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({ exportDir: 'C:\\正常\\导出' }), 'utf8')
+    assert.equal(lib.readSettings().exportDir, 'C:\\正常\\导出')
+  } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })

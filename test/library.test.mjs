@@ -366,6 +366,62 @@ test('书库：移除书籍会清掉目录与绑定，且可保留笔记副本',
   }
 })
 
+test('移除书籍：**重复删除**不许覆盖上一代保留副本（2026-10-03 体检复现：第一轮笔记曾被整份抹掉）', () => {
+  // ⚠️ 病根：保留副本的文件名**只由 `bookId` 决定**，而 `bookId` 是内容 sha 前 16 位
+  //    ⇒ 重新导入同一份文件再删一次，`copyFileSync` **原地覆盖**上一代；
+  //    而那本书的目录已经 `rmSync` 掉了 ⇒ 第一轮笔记在盘上**一份都不剩**。
+  //    界面刚说过"笔记已保留" —— 这是本插件唯一不可逆丢读者文本的路径。
+  //    修法 = 走 `uniqueBackupPath`（本仓库**唯一**的撞名入口，`purgeNotes` 早就在用）。
+  const f = makeFixture()
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    writeFileSync(f.library.paths.notes(book.bookId), '# 夜行\n\n> 第一轮的手写笔记\n')
+    const first = f.library.remove(book.bookId, { keepNotes: true })
+    assert.match(readFileSync(first.notesKeptAt, 'utf8'), /第一轮/)
+
+    // 重新导入同一份文件 ⇒ bookId 必然相同（内容 sha 前 16 位）—— 这是本条用例的前提。
+    const again = f.library.importBook({ absPath: f.sourcePath })
+    assert.equal(again.book.bookId, book.bookId, '同一份文件必须得到同一个 bookId（否则本用例测不到东西）')
+    writeFileSync(f.library.paths.notes(book.bookId), '# 夜行\n\n> 第二轮的手写笔记\n')
+    const second = f.library.remove(book.bookId, { keepNotes: true })
+
+    assert.notEqual(second.notesKeptAt, first.notesKeptAt, '第二次必须另起一个落点')
+    assert.match(readFileSync(first.notesKeptAt, 'utf8'), /第一轮/, '上一代保留副本不能被覆盖')
+    assert.match(readFileSync(second.notesKeptAt, 'utf8'), /第二轮/)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书架索引"能解析但形状不对"要与解析失败同等对待（2026-10-03 体检复现：导入曾把索引覆写成只剩一本）', () => {
+  // ⚠️ `readLibrary` 从前把 `books` 非数组**静默归一成空书架**，而 `recovered` 是
+  //    **解析**失败标志、仍是 `false` ⇒ `importBook` 那道 `LIBRARY_INDEX_CORRUPT` 护栏
+  //    **看不见这种坏**，读-改-写就把整个索引换成"只有这一本"（`books/` 里两本书都在
+  //    盘上，索引里只剩一本，而重建入口只在 CLI 脚本里，普通读者够不着）。
+  const f = makeFixture()
+  try {
+    f.library.importBook({ absPath: f.sourcePath })
+    const indexPath = join(f.storageDir, 'library.json')
+    const broken = JSON.stringify({ schemaVersion: 1, books: { 甲: {} } })
+    writeFileSync(indexPath, broken)
+
+    assert.equal(f.library.list().recovered, true, '形状坏要报出来（书架横幅靠这个信号）')
+    assert.throws(
+      () => f.library.importBook({ absPath: f.sourcePath }),
+      /LIBRARY_INDEX_CORRUPT/,
+      '形状坏时导入必须被拦住，否则会把索引覆写成只剩这一本',
+    )
+    assert.equal(readFileSync(indexPath, 'utf8'), broken, '坏索引不许被覆写')
+    assert.equal(
+      f.library.rebuildIndex({ apply: false }).indexRecovered,
+      true,
+      '重建入口要认得出"形状坏"（它从前只认解析失败）',
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
 test('移除书籍：索引没落定之前不许删内容（回归：旧顺序先 rmSync 再 CAS 写索引）', (t) => {
   // ⚠️ 2026-10-02 三方评审 P3-1：`remove()` 原来**先 `rmSync` 再 `writeLibrary`（CAS）**。
   // 撞上 `REVISION_CONFLICT`（两个窗口同时删同一本）或任何写盘失败时，**内容已经删了、
