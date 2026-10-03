@@ -492,3 +492,19 @@ test('清空重建：客户端读的层必须与路由回的形状一致（少�
   const writeAt = host.indexOf('writeBackground(path', resetAt)
   assert.ok(backupAt !== -1 && writeAt !== -1 && backupAt < writeAt, '备份必须在写空**之前**发生')
 })
+
+test('导出命名：`kind` 从备份列表一路传到导出名，中间不许被丢掉（少一层就永远叫「压缩前」）', async () => {
+  const { readFileSync: read } = await import('node:fs')
+  const { join: j } = await import('node:path')
+  const { fileURLToPath: f } = await import('node:url')
+  const root = f(new URL('..', import.meta.url))
+  const library = read(j(root, 'lib/host/library.js'), 'utf8')
+  const exporter = read(j(root, 'lib/host/export.js'), 'utf8')
+
+  // 第一层：算得出来（`listBackgroundBackups` 回 kind）。
+  assert.match(library, /kind: BACKUP_KIND_BY_TAG\[matched\[1\]\]/, '备份列表必须给出 kind')
+  // 第二层：传得下去（调用方 map 时不许把它丢掉）—— 这一层是 2026-10-03 的缺陷本体。
+  assert.match(library, /kind: item\.kind/, '调用方必须把 kind 带进结果对象')
+  // 第三层：用得上（导出按 kind 取名）。
+  assert.match(exporter, /backup\.kind === 'clean'/, '导出必须按 kind 决定来源词')
+})

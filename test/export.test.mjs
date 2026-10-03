@@ -346,3 +346,45 @@ test('自动备份：导出根没配 ⇒ 不写（宁可少做，不猜路径）
 
 //#endregion
 
+
+test('导出命名：来源进文件名 —— 压缩留的叫「压缩前」，清空重建留的叫「清空前」', () => {
+  const src = makeDir('export-kind-src')
+  const out = makeDir('export-kind-out')
+  try {
+    writeFileSync(join(src, 'background.md'), '# 《夜行》· 背景认识\n\n## 世界观\n- `第3章` 双女主\n')
+
+    // 同一批里两种来源**同一个时间戳**：名字必须不同，否则读者分不清、会乱合并。
+    const run = (backups) => runExport({
+      bookId: BOOK_ID,
+      title: '夜行',
+      targetDir: out,
+      notesMarkdown: null,
+      backgroundBytes: readFileSync(join(src, 'background.md')),
+      backups,
+      now: '2026-10-03T14:00:00.000Z',
+    })
+
+    const compact = run([{ stamp: '20261003-140000', kind: 'compact', bytes: Buffer.from('# 压缩前\n', 'utf8') }])
+    assert.deepEqual(
+      compact.files.map((file) => file.name).filter((name) => name.includes('背景-')).sort(),
+      ['夜行-背景-压缩前-20261003-140000.md'],
+      'kind: compact ⇒ 导出名说「压缩前」',
+    )
+
+    const clean = run([{ stamp: '20261003-140000', kind: 'clean', bytes: Buffer.from('# 清空前\n', 'utf8') }])
+    assert.ok(
+      clean.files.some((file) => file.name === '夜行-背景-清空前-20261003-140000.md'),
+      'kind: clean ⇒ 导出名必须说「清空前」；一律叫「压缩前」就是丢了来源（读者 2026-10-03 反馈）',
+    )
+
+    // ⚠️ 老调用方不传 kind（历史形状）⇒ 必须回落到「压缩前」，不能变成「清空前」或报错。
+    const legacy = run([{ stamp: '20261003-140000', bytes: Buffer.from('# 老\n', 'utf8') }])
+    assert.ok(
+      legacy.files.some((file) => file.name === '夜行-背景-压缩前-20261003-140000.md'),
+      '没传 kind 时回落「压缩前」',
+    )
+  } finally {
+    rmSync(src, { recursive: true, force: true })
+    rmSync(out, { recursive: true, force: true })
+  }
+})
