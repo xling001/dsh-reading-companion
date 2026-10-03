@@ -463,3 +463,32 @@ test('补齐的**失败出口**也要报归档（2026-10-03 体检：归档在�
   assert.doesNotMatch(src, /compact, retried\s*\}/, '失败出口不许只说压缩、不说归档')
   assert.match(src, /compact, archived, retried\s*\}/, '两件已落盘的事都要报出来')
 })
+
+test('清空重建：客户端读的层必须与路由回的形状一致（少一层 ⇒ 永远说「没留底」）', async () => {
+  // ⚠️ 这是**跨层契约**，不是"客户端长什么样"：路由回 { bookId, background: {...} }
+  //    （index.js 那条 reset 路由），所以 backupPath 在 **data.background.backupPath**。
+  //    写少一层**不会报错**，只会让提示永远说"没有留下备份" —— 而备份好好躺在磁盘上。
+  //    这正是本仓库点过名的"四层里少一层就静默失效"（算出来 → 结果对象 → 路由转发 → 客户端读）。
+  //    ⚠️ 它**不住 client.test.mjs**：那边有一条守卫纪律，不许再堆"读源码 + 字符串比对"的用例
+  //    （能渲染的要转成运行时断言，而这条跨的是两层、渲染不出来）。
+  //    可证伪：把客户端那行改回 data?.backupPath ⇒ 第二条断言红（实测过）。
+  const { readFileSync } = await import('node:fs')
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.match(
+    client,
+    /data\?\.background\?\.backupPath/,
+    'reset 路由回的是 { bookId, background }，backupPath 在 background 里面',
+  )
+  assert.doesNotMatch(
+    client,
+    /typeof data\?\.backupPath === 'string'/,
+    '读顶层就会永远读不到 —— 提示会一直说没有留下备份',
+  )
+  // 服务端那一侧：清空必须**先备份再写空**，且来源写进文件名。
+  const host = readFileSync(new URL('../lib/host/library.js', import.meta.url), 'utf8')
+  assert.match(host, /backupBackground\(bookId, 'clean'\)/, '清空之前必须留一代，且标明来源是清空')
+  const resetAt = host.indexOf('function backgroundReset')
+  const backupAt = host.indexOf("backupBackground(bookId, 'clean')", resetAt)
+  const writeAt = host.indexOf('writeBackground(path', resetAt)
+  assert.ok(backupAt !== -1 && writeAt !== -1 && backupAt < writeAt, '备份必须在写空**之前**发生')
+})

@@ -1073,7 +1073,10 @@ test('书库：背景备份"一代一份"——带时间戳，同秒也不互相
     const backups = f.library.listBackgroundBackups(book.bookId)
     assert.equal(backups.length, 2, '两代都要在，一代都不能被盖掉')
     for (const item of backups) {
-      assert.match(item.name, /^background\.bak\.\d{8}-\d{6}(-\d+)?\.md$/)
+      // ⚠️ 名字里必须带**来源**（2026-10-03 读者要求："不然以后分不清会导致乱合并"）——
+      //    压缩那一族是 `compactbak`，清空那一族是 `cleanbak`，两者含义完全不同。
+      assert.match(item.name, /^background\.compactbak\.\d{8}-\d{6}(-\d+)?\.md$/)
+      assert.equal(item.kind, 'compact', '族必须跟着每一项走，消费者不许再从文件名自己猜')
     }
   } finally {
     f.cleanup()
@@ -1174,6 +1177,79 @@ test('状态文件损坏：`list()` 要如实报出被挪走的坏文件（读�
     } finally {
       clean.cleanup()
     }
+  } finally {
+    f.cleanup()
+  }
+})
+test('书库：清空重建**先留一代**，而且来源写进文件名（2026-10-03 读者发现这条路上一个备份都没有）', () => {
+  // ⚠️ 压缩留备份、冷归档留增量，**唯独"清空重建"直接把文件写成空的** —— 而它删掉的是整份
+  //    认识，界面上也没有回滚入口。这是全仓库唯一能一次丢掉整份背景的路，却是唯一没留底的。
+  //    可证伪：把 `backgroundReset` 里那段备份删掉 ⇒ 第一条红；把 kind 写死成 'compact'
+  //    ⇒ 文件名那条红；把备份放到 writeBackground **之后** ⇒ "留底必须是清空前那一份"红。
+  const f = makeFixture()
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    const before = '<!-- drc-background: schema=1 covered=1..2 -->\n# 背景\n\n## 世界观\n- `第1章` 双女主\n'
+    writeFileSync(f.library.backgroundPath(book.bookId), before)
+
+    const result = f.library.backgroundReset(book.bookId)
+
+    // ① 清空照旧发生（读者点的是"清空"，那是他要的结果）
+    assert.equal(result.covered, null, '清空后不该还有区间')
+    assert.equal(f.library.backgroundMarkdown(book.bookId).includes('双女主'), false, '内容必须真的清掉')
+    // ② 但这一代**留了底**，而且名字里写着来源
+    assert.ok(result.backupPath !== null, '清空之前必须留一代')
+    assert.match(result.backupPath, /background\.cleanbak\.\d{8}-\d{6}(-\d+)?\.md$/, '来源要写进文件名')
+    assert.equal(readFileSync(result.backupPath, 'utf8'), before, '留底必须是**清空前**那一份原文')
+    // ③ 族跟着列表走，且与压缩那一族分得清（"不然以后分不清会导致乱合并"）
+    const backups = f.library.listBackgroundBackups(book.bookId)
+    assert.equal(backups.length, 1)
+    assert.equal(backups[0].kind, 'clean')
+    // ④ 再点一次也不许覆盖上一代
+    const again = f.library.backgroundReset(book.bookId)
+    assert.ok(again.backupPath !== null, '清空后的文件是空的，但"我清过一次"这件事也要留底')
+    assert.notEqual(again.backupPath, result.backupPath, '两代不许互相覆盖')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：从草稿「写入笔记」也要进讨论时间线（P8 第 4 步从前必然失败）', () => {
+  // ⚠️ 面板上那颗「写入笔记」走 POST /drafts/:draftId/commit ⇒ writeNoteFromDraft，
+  //    而它从前**一个字都不记**；只有隔壁 POST /books/:bookId/notes 那条路由在记。
+  //    于是 manual-testing.md 的 P8 第 4 步（记一条笔记 → 讨论历史里出现「写了笔记 · 第 N 章」）
+  //    必然失败，而讨论历史是「你们之前聊过」那段摘要的原料。
+  //    可证伪：把 writeNoteFromDraft 里那段 recordDiscussion 删掉 ⇒ 本用例红（实测过）。
+  const f = makeFixture()
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    const draft = f.library.saveDraft({
+      bookId: book.bookId, chapterIndex: 3, chapterTitle: '第0004章 夜', excerpt: '一段摘抄', thought: '我的感想',
+    })
+    assert.equal(f.library.listDiscussions(book.bookId).length, 0, '写之前时间线是空的')
+
+    f.library.writeNoteFromDraft(book.bookId, draft.draftId)
+
+    const list = f.library.listDiscussions(book.bookId)
+    assert.equal(list.length, 1, '写笔记必须进讨论时间线 —— 它是「你们之前聊过」的原料')
+    assert.equal(list[0].kind, 'note', '族必须是 note（面板据此显示「写了笔记 · 第 N 章」）')
+    assert.equal(list[0].chapterIndex, 3, '章号要跟着走')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('书库：磁盘上有、索引里没有的书目录必须报出来（C3：读不到不等于不存在）', () => {
+  // ⚠️ `rebuildIndex` 一直在算这件事，但它只有维护脚本一个消费者 ⇒ 那些目录在书架上
+  //    「就是不存在」，读者连「这里丢了一本」都不知道。3.1.5 的主题正是「读不到不再等于不存在」。
+  //    可证伪：把 `list()` 里的 `unreadable` 去掉 ⇒ 本用例红（实测过）。
+  const f = makeFixture()
+  try {
+    const { book } = f.library.importBook({ absPath: f.sourcePath })
+    assert.deepEqual(f.library.list().unreadable, [], '一切正常时不许有噪音')
+    mkdirSync(join(f.library.paths.books, 'deadbeefdeadbeef'), { recursive: true })
+    assert.deepEqual(f.library.list().unreadable, ['deadbeefdeadbeef'], '必须报出来')
+    assert.equal(f.library.list().unreadable.includes(book.bookId), false)
   } finally {
     f.cleanup()
   }

@@ -2247,4 +2247,3 @@ test('会话记忆：未保存的起稿也要能记（它没有 draftId）', asy
   rememberSessionView(sessionViews, 'session-abc', { view: 'notes', book: { bookId: 'b1' }, draft: '不是草稿' })
   assert.equal(recallSessionView(sessionViews, 'session-abc'), undefined)
 })
-

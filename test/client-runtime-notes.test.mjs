@@ -1023,3 +1023,33 @@ test('发笔记（运行时）：`skipped`（没有缺口）也要说出这一�
     `⚠️ "没有缺口"不等于"什么都没发生" —— 这一趟归档了 12 条，必须说出来：${text.slice(0, 400)}`,
   )
 })
+
+test('补齐结果：重试过就必须说出来（C1：retried 从前只造不读）', async () => {
+  // ⚠️ `retried` 一直是只造不读的：`memory-pipeline.js` 三个出口都在回它、`compact.js`
+  //    还按节造了 `retriedSections`，而客户端一个字段都没读 ⇒ 读者只会发现「这一批怎么慢了一倍」，
+  //    没有任何解释。服务端那行注释本来就写着「面板要说出来」，那句话从没兑现。
+  //    可证伪：把 `memoryFillClause` 里的 `retriedNote` 去掉 ⇒ 本用例红（实测过）。
+  const { internals } = await runtime()
+  const withRetry = internals.memoryFillClause({
+    kind: 'ok',
+    data: { retried: { reason: 'TIMEOUT', wastedMs: 42000, ok: true }, skipped: false },
+  })
+  assert.match(withRetry, /重试/, '第一次没成又重试过，读者必须知道')
+  assert.match(withRetry, /42 秒/, '多花了多久要说出来')
+  assert.match(withRetry, /TIMEOUT/, '原因要如实带出，不许编一个更好听的')
+  // 重试也没成时不许说成成功
+  const retryFailed = internals.memoryFillClause({
+    kind: 'ok',
+    data: { retried: { reason: 'EMPTY', wastedMs: 1000, ok: false } },
+  })
+  assert.match(retryFailed, /重试也没成/)
+  // 没重试过就一个字都不许多说
+  const plain = internals.memoryFillClause({ kind: 'ok', data: { skipped: false } })
+  assert.doesNotMatch(plain, /重试/, '没重试过不许提重试')
+  // 压缩是分节跑的，按节的重试也要说
+  const sections = internals.memoryFillClause({
+    kind: 'ok',
+    data: { compact: { ok: true, retriedSections: [{ section: '人物关系', reason: 'TIMEOUT', ok: true }] } },
+  })
+  assert.match(sections, /人物关系/)
+})

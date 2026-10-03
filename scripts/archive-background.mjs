@@ -96,7 +96,7 @@ const stamp = historyFileName(0, at, '').replace(/^0000-/, '').replace(/-\.md$/,
 const dir = dirname(file)
 
 // ① 整份备份（可回退）
-copyFileSync(file, join(dir, `background.bak.${stamp}.md`))
+copyFileSync(file, join(dir, `background.compactbak.${stamp}.md`))
 
 // ② 增量记录（只记这一笔搬走了什么 —— 备份之间不重复）
 const histDir = join(dir, HISTORY_DIR)
@@ -115,5 +115,5 @@ const titleMatch = /^#\s+《(.+?)》/.exec(md)
 writeFileSync(file, renderBackground(next, titleMatch === null ? '背景认识' : titleMatch[1]), 'utf8')
 
 console.log(`\n✓ 归档 ${moved} 条`)
-console.log(`  备份：background.bak.${stamp}.md`)
+console.log(`  备份：background.compactbak.${stamp}.md`)
 console.log(`  增量：${HISTORY_DIR}/${deltaName}`)
