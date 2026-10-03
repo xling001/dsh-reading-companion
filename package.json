@@ -1,6 +1,6 @@
 {
   "name": "dsh-reading-companion",
-  "version": "3.1.4",
+  "version": "3.1.5",
   "description": "DSH 本地书架 + AI 陪读插件（Novel companion）：导入本地 TXT、自动生成目录、按进度滚动阅读，并以「不剧透」的书友口吻陪你聊感想，把「原文摘抄—我的感想—AI 回应」写成结构化 Markdown 笔记。A local shelf with a spoiler-safe AI reading companion (Novel companion) for DeepSeek Harness (DSH).",
   "keywords": [
     "deepseek",
@@ -54,6 +54,7 @@
     "lib",
     "docs/design.md",
     "docs/publishing.md",
+    "docs/background-format.md",
     "scripts/reindex-books.mjs",
     "cordis.patch.yml",
     "README.md",

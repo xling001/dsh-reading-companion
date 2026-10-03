@@ -17,9 +17,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { JSON_SCHEMA_VERSION, mutateJson, readJson, updateJson } from '../lib/host/atomic-json.js'
 
 import {
   BACKGROUND_SCHEMA_VERSION,
@@ -39,6 +42,8 @@ import {
   remapNoteCoordinates,
   upsertDraft,
 } from '../lib/host/notes.js'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** 跑一次并把它抛出的错误交回来（断言文案要用）。 */
 function capture(fn) {
@@ -179,4 +184,66 @@ test('草稿：schemaVersion 比我们新 ⇒ 拒绝写；但读不受影响（�
 
     assert.equal(readFileSync(path, 'utf8'), future, '两次拒绝之后 drafts.json 必须逐字节不变')
   })
+})
+
+test('JSON 状态文件：书架 / 绑定 / 分类 / 设置共用同一道"未来格式不覆盖"（2026-10-03，外部评审 #2）', () => {
+  // 从前这条保护只有 background.md / notes.md / 草稿有，**四个 JSON 状态文件一个都没装**：
+  // `readLibrary` 只查 `books` 是不是数组，`writeLibrary` 把对象**从零重建**成
+  // `{ schemaVersion: 1, books }` ⇒ 更新版本写下的 `schemaVersion: 2` 连同它的新字段
+  // 会被**静默降级抹掉**，没有任何提示。判据现在只有一处（`atomic-json.js` 的 `updateJson`），
+  // 四个文件共用。
+  withTempDir((dir) => {
+    const path = join(dir, 'library.json')
+    const future = JSON.stringify({
+      schemaVersion: JSON_SCHEMA_VERSION + 1,
+      books: [{ bookId: 'b1' }],
+      futureOnlyField: '别弄丢我',
+    })
+    writeFileSync(path, future, 'utf8')
+
+    const error = capture(() =>
+      updateJson(path, { fallback: { schemaVersion: 1, books: [] }, expectedRevision: null, mutate: () => ({ schemaVersion: 1, books: [] }) }),
+    )
+    assert.ok(error !== null, '声明了更新的 schema，写盘必须被拒绝')
+    assert.equal(error.code, 'JSON_SCHEMA_UNSUPPORTED')
+    // 错误里要带得走的信息：盘上声明第几版、我们认识到第几版。
+    assert.equal(error.declared, JSON_SCHEMA_VERSION + 1)
+    assert.equal(error.supported, JSON_SCHEMA_VERSION)
+    assert.equal(readFileSync(path, 'utf8'), future, '拒绝之后必须逐字节不变')
+
+    // 绑定 / 分类 / 设置走 `mutateJson` —— 同样被拦，而且**不**误当损坏去挪开：
+    // 未来版本写下的文件是**好文件**，挪走等于把读者的数据改名藏起来。
+    const mutError = capture(() =>
+      mutateJson(path, { fallback: { schemaVersion: 1, books: [] }, mutate: () => ({ schemaVersion: 1, books: [] }) }),
+    )
+    assert.equal(mutError?.code, 'JSON_SCHEMA_UNSUPPORTED', 'mutateJson 也必须拒写')
+    assert.equal(readdirSync(dir).filter((name) => name.includes('.corrupt-')).length, 0, '未来版本不是"损坏"，不许挪走读者的文件')
+    assert.equal(readFileSync(path, 'utf8'), future)
+
+    // ⚠️ 反向：同版 / 更旧 / 老文件根本没写版本 ⇒ 照常写（升级路径不许被自己挡住）
+    for (const [label, value] of [
+      ['同版', { schemaVersion: JSON_SCHEMA_VERSION, books: [] }],
+      ['更旧', { schemaVersion: 0, books: [] }],
+      ['没写版本', { books: [] }],
+    ]) {
+      const p = join(dir, `ok-${label}.json`)
+      writeFileSync(p, JSON.stringify(value), 'utf8')
+      const revision = readJson(p, {}).revision
+      assert.doesNotThrow(
+        () => updateJson(p, { fallback: { schemaVersion: 1, books: [] }, expectedRevision: revision, mutate: () => ({ schemaVersion: 1, books: ['写了'] }) }),
+        `${label}：不该被挡住`,
+      )
+      assert.deepEqual(JSON.parse(readFileSync(p, 'utf8')).books, ['写了'], label)
+    }
+  })
+})
+
+test('契约：JSON schema 版本号只有一处字面量，书架索引与草稿库都从它派生', () => {
+  // "同一概念只有一个定义点" —— 数值本身（1）不重要，重要的是**只有一处**。
+  // 分叉的后果不是"数字不一样"，而是"有的文件保护、有的不保护"。
+  assert.equal(DRAFTS_SCHEMA_VERSION, JSON_SCHEMA_VERSION, '草稿库与其它 JSON 状态文件共用同一个版本号')
+
+  const src = readFileSync(join(HERE, '..', 'lib', 'host', 'library.js'), 'utf8')
+  assert.match(src, /const SCHEMA_VERSION = JSON_SCHEMA_VERSION/, '书架索引的版本号必须从共用常量派生')
+  assert.doesNotMatch(src, /const SCHEMA_VERSION = \d/, '不许再写一个字面量')
 })

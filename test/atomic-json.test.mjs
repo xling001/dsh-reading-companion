@@ -168,3 +168,61 @@ test('atomicWriteText：顺带清掉**过期**的临时残骸，但绝不碰新�
     f.cleanup()
   }
 })
+
+/** 跑一次并把它抛出的错误交回来（断言 `code` 要用）。 */
+function capture(fn) {
+  try {
+    fn()
+    return null
+  } catch (error) {
+    return error
+  }
+}
+
+test('读不到 ≠ 不存在：非 ENOENT 的读失败标 unreadable，写路径一律拒写（2026-10-03，外部评审 #1）', () => {
+  // ⚠️ 这条挡的是一个**静默吃数据**的形状。从前 `readJson` 的第一个 catch 是**裸的**：
+  //    `ENOENT`（真的没有）与 `EACCES`/`EIO`/被杀毒软件或同步盘锁住**长得一模一样**
+  //    —— 都是 `{ revision: null, recovered: false }`。于是调用方以为"这文件还没建"，
+  //    `expectedRevision` 传 `null`；而读失败时 `revision` **也是** `null`
+  //    ⇒ CAS 判"相等"直接放行 ⇒ **把一份读不到的好数据覆盖成空骨架**，全程无声。
+  //
+  //    （传**真实** revision 的路径是安全的：`null ≠ 真值` 会抛 `REVISION_CONFLICT`。
+  //      危险只落在 `expectedRevision: null` + 文件其实存在 这一种组合上。）
+  const f = makeFile()
+  try {
+    // 造一个"存在但读不出来"的路径：**目录本身**。`readFileSync(目录)` 报 EISDIR
+    // —— 这是不依赖平台权限设置、Windows/Linux 都能稳定复现的"非 ENOENT"。
+    const asDir = join(f.dir, 'locked.json')
+    mkdirSync(asDir)
+
+    const read = readJson(asDir, FALLBACK)
+    assert.equal(read.unreadable, true, '非 ENOENT 的读失败必须标 unreadable')
+    assert.equal(read.recovered, false, '它不是"损坏"—— 盘上那份可能是完好的')
+    assert.equal(read.revision, null)
+
+    // 真的不存在才允许 `unreadable: false`（否则新装用户第一次写就被挡住）
+    assert.equal(readJson(join(f.dir, 'never.json'), FALLBACK).unreadable, false)
+
+    // 写路径一律拒写，而且**不要求**调用方声明 CAS（那是"损坏"那条的规矩：
+    // 损坏时没有东西可丢，读不到时**有东西可丢**）
+    for (const [label, run] of [
+      ['updateJson', () => updateJson(asDir, { fallback: FALLBACK, mutate: () => FALLBACK })],
+      ['updateJson + 声明 CAS', () => updateJson(asDir, { fallback: FALLBACK, expectedRevision: null, mutate: () => FALLBACK })],
+      ['mutateJson', () => mutateJson(asDir, { fallback: FALLBACK, mutate: () => FALLBACK })],
+    ]) {
+      const error = capture(run)
+      assert.ok(error !== null, `${label}：读不到时必须拒写，不能当成"空数据"写下去`)
+      assert.equal(error.code, 'STORAGE_UNREADABLE', label)
+      assert.equal(error.path, asDir, label)
+    }
+
+    // ⚠️ 反向：**真的不存在**必须照旧能首写 —— 否则新装用户连第一本书都存不下。
+    const fresh = join(f.dir, 'brand-new.json')
+    assert.doesNotThrow(() =>
+      updateJson(fresh, { fallback: FALLBACK, expectedRevision: null, mutate: () => ({ schemaVersion: 1, list: ['第一本'] }) }),
+    )
+    assert.deepEqual(JSON.parse(readFileSync(fresh, 'utf8')).list, ['第一本'], '首写必须真的落盘')
+  } finally {
+    f.cleanup()
+  }
+})
