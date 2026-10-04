@@ -9,17 +9,16 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { createLibrary, resolveInboxDir } from '../lib/host/library.js'
 import { parseBackground } from '../lib/host/background.js'
 import { parseNotes } from '../lib/host/notes.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = join(HERE, '.tmp')
+const TMP_ROOT = join(tmpdir(), 'drc-library')
 
 /** 重复出现的正文行，用来把平均行长拉高。 */
 const prose = (seed) =>

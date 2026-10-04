@@ -11,6 +11,7 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -22,7 +23,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { listenOnSafePort } from './helpers/server.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const TMP = join(ROOT, 'test', '.tmp')
+const TMP = join(tmpdir(), 'drc-routes')
 const API_ROOT = '/dsh-reading-companion/api'
 
 let importSeq = 0

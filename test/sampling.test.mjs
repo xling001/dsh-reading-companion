@@ -19,16 +19,15 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 import { CONFIG_DEFAULTS } from '../lib/index.js'
 import { createLibrary } from '../lib/host/library.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = join(HERE, '.tmp')
+const TMP_ROOT = join(tmpdir(), 'drc-sampling')
 
 /** 一句 22 字的填充，用来精确控制章长。 */
 const LINE = '雪落在瓦上，像有人在半空里把时间掰开了一点点。'

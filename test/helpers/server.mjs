@@ -17,11 +17,12 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-export const TMP = join(ROOT, 'test', '.tmp')
+export const TMP = join(tmpdir(), 'drc-server')
 export const API_ROOT = '/dsh-reading-companion/api'
 
 let importSeq = 0

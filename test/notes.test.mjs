@@ -10,10 +10,10 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 import { createLibrary } from '../lib/host/library.js'
 import {
@@ -33,8 +33,7 @@ import {
   upsertDraft,
 } from '../lib/host/notes.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = join(HERE, '.tmp')
+const TMP_ROOT = join(tmpdir(), 'drc-notes')
 
 let seq = 0
 /** 建一个隔离目录。 */

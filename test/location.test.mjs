@@ -12,16 +12,15 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, parse } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, parse } from 'node:path'
 
 import { createLibrary } from '../lib/host/library.js'
 import { inspectWorkspaceDir, sanitizeFolderName } from '../lib/host/paths.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = join(HERE, '.tmp')
+const TMP_ROOT = join(tmpdir(), 'drc-location')
 
 const PROSE = '他记得那天的雪落得很慢，像有人在半空里把时间掰开了一点点，然后一片一片地放下。天光从瓦缝里漏下来。'
 

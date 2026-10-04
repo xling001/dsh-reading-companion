@@ -12,10 +12,10 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 import {
   decideExportTarget,
@@ -26,8 +26,7 @@ import {
   writeAutoBackup,
 } from '../lib/host/export.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = join(HERE, '.tmp')
+const TMP_ROOT = join(tmpdir(), 'drc-export')
 
 let seq = 0
 /** 建一个隔离目录。 */

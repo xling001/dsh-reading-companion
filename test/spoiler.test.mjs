@@ -18,10 +18,10 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 import { createLibrary } from '../lib/host/library.js'
 import { backgroundGap, parseBackground, renderBackgroundForPrompt } from '../lib/host/background.js'
@@ -46,8 +46,7 @@ import {
   webGateReason,
 } from '../lib/host/spoiler.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = join(HERE, '.tmp')
+const TMP_ROOT = join(tmpdir(), 'drc-spoiler')
 
 //#region 纯函数：转义与归一化
 

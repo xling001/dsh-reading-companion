@@ -13,6 +13,7 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, fsyncSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -26,7 +27,7 @@ let seq = 0
 /** 一个隔离的临时 JSON 文件。 */
 function makeFile(initial) {
   seq += 1
-  const dir = join(HERE, '.tmp', `atomic-${process.pid}-${Date.now()}-${seq}`)
+  const dir = join(tmpdir(), 'drc-atomic-json', `atomic-${process.pid}-${Date.now()}-${seq}`)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, 'store.json')
   if (initial !== undefined) writeFileSync(path, initial, 'utf8')

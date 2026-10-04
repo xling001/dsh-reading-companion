@@ -11,18 +11,17 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 import { CONFIG_DEFAULTS } from '../lib/index.js'
 import { createLibrary } from '../lib/host/library.js'
 import { DEFAULT_LONG_CHAPTER_SPLIT, parseChapters, splitLongChapters, validateChapters } from '../lib/host/chapters.js'
 import { BACKGROUND_SCHEMA_VERSION } from '../lib/host/background.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = join(HERE, '.tmp')
+const TMP_ROOT = join(tmpdir(), 'drc-long-chapter-split')
 
 /** 恰好 500 字的一段。 */
 const PARA_500 = '山道上又起了雾，他把斗篷裹紧了些，脚下却没有停。'.repeat(21).slice(0, 500)

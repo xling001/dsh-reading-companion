@@ -11,6 +11,7 @@
  */
 
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -19,7 +20,7 @@ import { after } from 'node:test'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 /** 测试期落盘根目录：必须在工作区内，否则会被文件沙箱拒绝。 */
-const TMP = join(ROOT, 'test', '.tmp')
+const TMP = join(tmpdir(), 'drc-plugin')
 const API_ROOT = '/dsh-reading-companion/api'
 const PLUGIN_NAME = 'dsh-reading-companion'
 
