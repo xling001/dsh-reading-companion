@@ -335,3 +335,54 @@ test('「人物状态」的散行**自己报了名字**时归到那个主体名�
   )
   assert.deepEqual(other.groups['人物状态']['乙'], ['`第9章` 乙已经下山。'])
 })
+
+test('「人物状态」的替换**跨形态**：旧状态是平铺、新状态是分组（同主体）⇒ 旧的必须进「已取代」', () => {
+  // ⚠️ 病根（2026-10-04 实测）：替换从前是**两支各自独立**的（平铺支只看 `add.sections`、
+  //    分组支只看 `add.groups`）⇒ 新状态写成**另一形态**时两支谁也看不见谁，旧的
+  //    **永远不被 retire** ⇒ 同一个人名下并存两条互相矛盾的"此刻"（实测：第 30 章
+  //    平铺一条 + 第 49 章分组一条，两条都作为"现在"被注入）。
+  //    可证伪：把 `mergeBackground` 里那一处跨形态替换改回"只看 `add.sections`"
+  //    （或只看 `add.groups`）⇒ 下面第一条断言红。
+  const base = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..30 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物状态',
+    '- `第30章` 竹纤：在华山黄龙洞，随卓仲廉一行。',
+  ].join('\n'))
+  const add = parseBackground([
+    '<!-- drc-background: schema=1 covered=49..49 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物状态',
+    '### 竹纤',
+    '- `第49章` 随卓仲廉一行西行，已过潼关。',
+  ].join('\n'))
+
+  // 前置事实：两份文件确实落在**两个桶**里 —— 否则这条用例钉不住"跨形态"。
+  assert.deepEqual(base.sections[BACKGROUND_STATE_SECTION], ['`第30章` 竹纤：在华山黄龙洞，随卓仲廉一行。'])
+  assert.deepEqual(Object.keys(base.groups[BACKGROUND_STATE_SECTION] ?? {}), [], '旧的落在平铺桶里')
+  assert.deepEqual(add.sections[BACKGROUND_STATE_SECTION], [])
+  assert.deepEqual(add.groups[BACKGROUND_STATE_SECTION]['竹纤'], ['`第49章` 随卓仲廉一行西行，已过潼关。'])
+
+  const merged = mergeBackground(base, add, { first: 49, last: 49 })
+
+  // ① 旧的那条**原文一字不改**地进了「已取代」，尾注与既有那条**逐字一致**。
+  assert.deepEqual(
+    merged.retired,
+    ['`第30章` 竹纤：在华山黄龙洞，随卓仲廉一行。 <!-- 已于第 49 章被取代 -->'],
+    '新状态写在另一形态里，旧的也必须被 retire',
+  )
+  // ② 同主体只剩新的那一条 —— **两个桶一起看**（旧的不许留在散行桶里）。
+  assert.deepEqual(merged.sections[BACKGROUND_STATE_SECTION], [], '旧平铺条目要搬走，不许与新的并存')
+  assert.deepEqual(
+    merged.groups[BACKGROUND_STATE_SECTION]['竹纤'],
+    ['`第49章` 随卓仲廉一行西行，已过潼关。'],
+  )
+  // ③ "一人一行"：这一节活着的内容加起来**只有一行**。
+  const live = [
+    ...merged.sections[BACKGROUND_STATE_SECTION],
+    ...Object.values(merged.groups[BACKGROUND_STATE_SECTION] ?? {}).flat(),
+  ]
+  assert.deepEqual(live, ['`第49章` 随卓仲廉一行西行，已过潼关。'], '同一个人名下不许并存两条"此刻"')
+})
