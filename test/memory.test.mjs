@@ -24,6 +24,7 @@ import {
   looksTruncated,
   malformedGroupedSections,
   memoryBudgetOverrun,
+  orphanEntriesOf,
 } from '../lib/host/memory.js'
 import {
   FILL_INCREMENTAL_SECTIONS,
@@ -811,6 +812,74 @@ test('补齐落盘：分组节写成平铺要**如实报**（报告，不是裁�
     '- 爱用短句。',
   ].join('\n'))
   assert.deepEqual(malformedGroupedSections(good), [], '正常文件（含平铺的平级节）一条都不许报')
+})
+
+test('补齐落盘：形状坏了要**分两档**报 —— 有名字的会自愈，没名字的是永久孤儿（2026-10-05，两本真机书实测）', () => {
+  // ⚠️ 病根（读者真机报告 + 实测）：模型漏写 `### 主体` 时，散行落进平铺桶，而
+  //    「散行归位」的判据**刻意窄**（名字必须已经是这一节的一个 `###`）⇒ 搬不动的分两类：
+  //      · `- 甲：…`：**有名字**，下一批回显会提示"照 `### 主体` 分组写"，模型给甲建桶之后
+  //        这条在**下一次解析**时被自动吸收 ⇒ **会自愈**；
+  //      · `- \`第30章\` 少华山…`：**没名字**（`textSubjectOf` 回空串）⇒ 模型也无从知道
+  //        它是谁的 ⇒ **永远不会归位、也不会被替换**（替换按主体找）⇒ **只能手工改**。
+  //    从前两者报同一句话（"下一批会提示模型归位"）⇒ 对第二类**是假话**。
+  //    可证伪：把 `orphanEntriesOf` 的判据从 `=== ''` 改成 `!== ''` ⇒ 本用例第一条红。
+  const mixed = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..84 -->',
+    '# 《书》· 背景认识',
+    '',
+    '## 人物状态',
+    '- `第30章` 少华山轮回世界中，与江芷微一路送内奸名单。',
+    '- `第49章` 竹纤：随卓仲廉一行往阳平关。',
+    '### 真妙',
+    '- `第58章` 真常事发，随众搜索悬崖。',
+  ].join('\n'))
+
+  assert.deepEqual(malformedGroupedSections(mixed), ['人物状态'], '这一节有搬不动的散行')
+  assert.deepEqual(
+    orphanEntriesOf(mixed),
+    [{ name: '人物状态', entries: ['`第30章` 少华山轮回世界中，与江芷微一路送内奸名单。'] }],
+    '只有取不出主体名的那条才算永久孤儿（`竹纤：…` 有名字 ⇒ 下一批能给竹纤建桶、会被吸收）',
+  )
+
+  // ⚠️ **反面一：有名字但本节没有同名 `###`** —— 那是"能自愈"的那一类，不许报成永久孤儿
+  //    （真机形态：`## 通用概念` 里 `- \`第18章\` 善功：…`，而这一节没有 `### 善功`）。
+  const healable = parseBackground([
+    '## 通用概念',
+    '- `第18章` 善功：轮回世界通行的兑换点数。',
+  ].join('\n'))
+  assert.deepEqual(malformedGroupedSections(healable), ['通用概念'], '它确实搬不动（本节没有同名主体）')
+  assert.deepEqual(orphanEntriesOf(healable), [], '但它**报了名字** ⇒ 不许报成永久孤儿')
+
+  // ⚠️ **反面二：形状正常** ⇒ 一条都不许报
+  const good = parseBackground(['## 人物状态', '### 甲', '- `第9章` 在山门。'].join('\n'))
+  assert.deepEqual(orphanEntriesOf(good), [], '形状正常时一条都不许报')
+})
+
+test('补齐提示词：散行**必须自带主体名**（写入侧的堵口，2026-10-05 两本真机书实测）', () => {
+  // ⚠️ 上报只能让读者看见；**真正防住新孤儿的是写入侧** —— 形状可以退（漏写 `###`），
+  //    但名字不能丢：没有主体名的状态行下一批顶不掉、不出卡，而注入时它是
+  //    **一句没有主人的"此刻"**（这一节的全部价值恰恰是"**这个人**此刻在哪"）。
+  //    ⚠️ **两处都要有，且要分开钉**：格式块（示例旁边）与规则 18（判据旁边）。
+  //    第一版把三句一起钉，于是"删掉其中一处"**照样绿** —— 守卫形同虚设
+  //    （实测：只删规则 18 那一句，三句断言仍全部命中格式块里的同义句）。
+  //    可证伪：删掉格式块那一句 ⇒ 前两条红；删掉规则 18 那一句 ⇒ 后两条红。
+  const prompt = buildMemoryPrompt({
+    bookTitle: '测试书',
+    samples: [{ index: 0, title: '一', text: '正文' }],
+    fromChapter: 1,
+    toChapter: 1,
+  })
+  const lines = prompt.split('\n')
+  const start = lines.findIndex((line) => line.includes('按下面'))
+  const end = lines.findIndex((line) => line.trim() === '要求：')
+  assert.ok(start >= 0 && end > start, '找不到格式块的边界 —— 提取逻辑可疑')
+  const formatBlock = lines.slice(start, end).join('\n')
+  const rules = lines.slice(end).join('\n')
+
+  assert.match(formatBlock, /万一没写成/, '格式块的示例旁边要说清"没写成 `###` 时怎么办"')
+  assert.match(formatBlock, /- 主体：/, '格式块里要给出散行的形状（`- 主体：`第N章` …`）')
+  assert.match(rules, /万一写成散行/, '规则 18 要给出同一条兜底')
+  assert.match(rules, /没有主体名的状态行/, '规则 18 还要说清代价（没有主体名 ⇒ 没有主人）')
 })
 
 //#endregion
