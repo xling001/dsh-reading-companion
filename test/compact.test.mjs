@@ -219,10 +219,35 @@ test('压缩提示词（3.0 分节作业）：每节只看自己的尺子，共�
   assert.match(文风, /可以压得最狠/, '文风压得最狠')
   // ⚠️ 3.0：「前文脉络」并入「时间与分线」⇒ **不再是分节作业**（旧文件里的它由代码原样搬运）
   assert.ok(!COMPRESSIBLE_SECTIONS.includes('前文脉络'), '脉络不在作业清单里')
-  for (const prompt of [人物, 关系, 文风]) {
+  for (const prompt of [人物, 关系]) {
     assert.match(prompt, /同一主体名下的多条 = 合并；不同主体之间 = 不许动/, '总原则每一遍都要带（每次调用都是独立上下文）')
     assert.match(prompt, /一个都不能少/, '主体保全每遍都要说')
   }
+  // ⚠️ 文风**不在上面那一组**（2026-10-04）：它是平铺、而且**没有主体** ——
+  //    对它说"一个都不能少"与它自己的尺子（"宁可少留几条"）自相矛盾。
+  //    它该被说的是另一句：**别加 `###`**。
+  assert.match(文风, /不要加 `###` 标题/, '平铺节必须明说别造 `###`')
+  assert.ok(!文风.includes('一个都不能少'), '没有主体的节不许被要求"一个都不能少"（与它自己的尺子打架）')
+})
+
+test('压缩提示词：要求 4 按**形状**分叉（平铺节不许诱导造 `###`）', () => {
+  // ⚠️ 2026-10-04 修。「人物关系」改回平铺之后，无条件发"每一个 `###` 主体都要在"
+  //    有两个后果：① 措辞把模型往分组形状带；② 真造出 `###` 的话条目落进 `groups`，
+  //    而平铺的「对不许少」校验（`COMPACT_LOST_PAIRS`）只读 `sections` ⇒ 读到空
+  //    ⇒ **整批丢弃** ⇒ 这一节永远压不掉（而它权重最高）。
+  //
+  //    证伪：把 `keepSubject` 改回那句无条件的旧文案 ⇒ 下面两条 `doesNotMatch` 红。
+  const grouped = buildCompactPrompt({ bookTitle: '书', section: '人物', sectionMarkdown: '## 人物\n### 甲\n- `第1章` x' })
+  assert.match(grouped, /每一个 `###` 主体都要在/, '分组节照旧：主体一个都不能少')
+
+  const pair = buildCompactPrompt({ bookTitle: '书', section: '人物关系', sectionMarkdown: '## 人物关系\n- 甲 ↔ 乙：对手' })
+  assert.match(pair, /不要加 `###` 标题/, '平铺节要明说别造 `###`')
+  assert.match(pair, /每一对都要在/, '平铺的「人物关系」要按**对**说保全')
+  assert.ok(!pair.includes('每一个 `###` 主体都要在'), '平铺节不许再发那句分组的话')
+
+  const style = buildCompactPrompt({ bookTitle: '书', section: '文风（只写一次）', sectionMarkdown: '## 文风（只写一次）\n- 平实白描。' })
+  assert.match(style, /不要加 `###` 标题/, '文风也是平铺，同样要明说')
+  assert.ok(!style.includes('主体都要还在'), '文风没有主体 ⇒ 不许要求"主体都要在"')
 })
 
 test('压缩：不许用"合出巨段 / 超长条"来达标（2026-10-02 真机实测暴露）', () => {
@@ -332,6 +357,10 @@ test('校验：没变小 → 整批丢弃（否则会陷入压缩→没效果→
 test('校验：覆盖区间变大是允许的（合并了别处的内容时）', () => {
   const after = docOf([
     '<!-- drc-background: schema=1 covered=1..12 -->',
+    // ⚠️ 「人物关系」必须留着（平铺，且保住那一对）——否则先被 `COMPACT_LOST_PAIRS`
+    //    拦下，这条用例就测不到"覆盖区间变大"那件事了。
+    '## 人物关系',
+    '- 甲 ↔ 乙：对手（`第2章`）',
     '## 人物',
     '### 甲',
     '- `第1-5章` 身份未明后立场转变',
@@ -524,7 +553,12 @@ test('分节作业：一节的失败**重试一次** —— "没睡醒"不该让
         if (attemptsOnPerson === 1) return { output: [] }  // 第一次"没睡醒"（空输出）
         return { output: [{ type: 'text', text: '## 人物\n### 甲\n- `第1章` 身份未明。' }] }
       }
-      return { output: [{ type: 'text', text: `## ${section}\n- \`第1章\` 原样。` }] }
+      // ⚠️ 「人物关系」的回执必须**保住那一对**（`- 甲 ↔ 乙：…`）：它 2026-10-04 改回
+      //    平铺之后，压缩侧的「保主体」按**条目开头的双方**比对（`COMPACT_LOST_PAIRS`）
+      //    —— 回一句不带双方的"原样"就等于把这对关系丢了，会被正确地拦下。
+      return { output: [{ type: 'text', text: section === '人物关系'
+        ? '## 人物关系\n- 甲 ↔ 乙：原样。'
+        : `## ${section}\n- \`第1章\` 原样。` }] }
     },
     getAgent: () => ({ id: 'parent' }),
     getSubagents: () => undefined,
@@ -596,7 +630,10 @@ test('分节作业（并发）：各节的调用**同时开跑** —— wall-clo
       events.push({ kind: 'start', section, at: Date.now() })
       await new Promise((resolve) => setTimeout(resolve, 60))
       events.push({ kind: 'end', section, at: Date.now() })
-      return { output: [{ type: 'text', text: `## ${section}\n### 甲\n- \`第1章\` 压缩后的条目。` }] }
+      // ⚠️ 同上：平铺的「人物关系」回执必须保住那一对，否则被 `COMPACT_LOST_PAIRS` 拦下。
+      return { output: [{ type: 'text', text: section === '人物关系'
+        ? '## 人物关系\n- 甲 ↔ 乙：压缩后的条目。'
+        : `## ${section}\n### 甲\n- \`第1章\` 压缩后的条目。` }] }
     },
     getAgent: () => ({ id: 'parent' }),
     getSubagents: () => undefined,

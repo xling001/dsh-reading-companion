@@ -552,8 +552,7 @@ test('内容挂在 `### 主体` 下时不算"解析不出"（v1.22 分组分区�
         text: [
           '<!-- drc-background: schema=1 covered=1..9 -->',
           '## 人物关系',
-          '### 甲 × 乙',
-          '- `第2章` 对手',
+          '- 甲 ↔ 乙：`第2章` 对手',
           '## 世界观',
           '### 落霞谷',
           '- `第1章` 三面环水',
@@ -563,7 +562,10 @@ test('内容挂在 `### 主体` 下时不算"解析不出"（v1.22 分组分区�
   })
   const result = await grouped.filler(BASE_REQUEST)
   assert.equal(result.ok, true, `不该被判成 ${result.reason}`)
-  assert.deepEqual(result.parsed.groups['人物关系']['甲 × 乙'], ['`第2章` 对手'])
+  // ⚠️ 「人物关系」2026-10-04 改回平铺 ⇒ 它的条目在 `sections` 里；
+  //    「世界观」仍是分组 ⇒ `### 落霞谷` 那一半继续钉着本用例的原意。
+  assert.deepEqual(result.parsed.sections['人物关系'], ['甲 ↔ 乙：`第2章` 对手'])
+  assert.deepEqual(result.parsed.groups['世界观']['落霞谷'], ['`第1章` 三面环水'])
 
   // 同一个判据的另一半（旧代码本来就有）：它数了 `characters`，却没数**散条的**
   // 「人物」——那里放的是模型漏了 `###` 的条目。

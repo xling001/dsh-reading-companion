@@ -49,13 +49,12 @@ const mergeIn = (base, lines, range, options) =>
 
 //#region 实体键
 
-test('实体键：`###` 在五个分组分区下都是主体', () => {
+test('实体键：`###` 在四个分组分区下都是主体（「人物关系」已改回平铺）', () => {
   const doc = docOf([
     '<!-- drc-background: schema=1 covered=1..20 -->',
     '## 人物关系',
-    '### 甲 × 乙',
-    '- `第12章` 雨夜决裂',
-    '- `第20章` 复和',
+    '- 甲 ↔ 乙：`第12章` 雨夜决裂',
+    '- 甲 ↔ 乙：`第20章` 复和',
     '## 人物',
     '### 甲',
     '- `第3章` 沉默寡言',
@@ -67,13 +66,17 @@ test('实体键：`###` 在五个分组分区下都是主体', () => {
     '- `第4章` 三年一考，分乡试会试殿试',
   ])
 
-  // 四个分区都要认 `###`。只认「人物」就是旧行为，等于人物关系永远是一条条
-  // 不知道属谁的散条目。
+  // 分组的有**四**节。⚠️ 「人物关系」**不在里面**了（读者 2026-10-04 拍板改回平铺）——
+  //    它的主体写在**条目文本开头**（`- 甲 ↔ 乙：…`）⇒ 条目落在 `sections` 里。
   assert.deepEqual(
     [...BACKGROUND_GROUPED_SECTIONS],
-    ['人物状态', '人物关系', '人物', '世界观', '通用概念'],
+    ['人物状态', '人物', '世界观', '通用概念'],
   )
-  assert.deepEqual(doc.groups['人物关系']['甲 × 乙'], ['`第12章` 雨夜决裂', '`第20章` 复和'])
+  assert.deepEqual(
+    doc.sections['人物关系'],
+    ['甲 ↔ 乙：`第12章` 雨夜决裂', '甲 ↔ 乙：`第20章` 复和'],
+  )
+  assert.deepEqual(Object.keys(doc.groups['人物关系'] ?? {}), [], '平铺节里不该有主体')
   assert.deepEqual(doc.groups['人物']['甲'], ['`第3章` 沉默寡言'])
   assert.deepEqual(doc.groups['世界观']['落霞谷'], ['`第8章` 三面环水'])
   assert.deepEqual(doc.groups['通用概念']['科举制'], ['`第4章` 三年一考，分乡试会试殿试'])
@@ -103,17 +106,31 @@ test('实体键：非分组分区里的 `###` 不被当成主体', () => {
 
 test('实体键：分组分区渲染出 `### 主体`，往返后等价', () => {
   const doc = mergeIn(parseBackground(''), [
-    '## 人物关系',
-    '### 甲 × 乙',
-    '- `第12章` 雨夜决裂',
+    '## 世界观',
+    '### 落霞谷',
+    '- `第12章` 三面环水',
   ], { first: 12, last: 12 })
 
   const text = renderBackground(doc, '测试书')
-  assert.match(text, /^### 甲 × 乙$/m, '分组分区必须把主体写回文件')
+  assert.match(text, /^### 落霞谷$/m, '分组分区必须把主体写回文件')
 
   const again = parseBackground(text)
-  assert.deepEqual(again.groups['人物关系']['甲 × 乙'], ['`第12章` 雨夜决裂'])
+  assert.deepEqual(again.groups['世界观']['落霞谷'], ['`第12章` 三面环水'])
   assert.deepEqual(again.covered, { first: 12, last: 12 })
+})
+
+test('实体键：平铺的「人物关系」往返后**主体前缀原样留着**（不靠 `###` 承载）', () => {
+  const doc = mergeIn(parseBackground(''), [
+    '## 人物关系',
+    '- 甲 ↔ 乙：`第12章` 雨夜决裂',
+  ], { first: 12, last: 12 })
+
+  const text = renderBackground(doc, '测试书')
+  assert.match(text, /^- 甲 ↔ 乙：`第12章` 雨夜决裂$/m, '平铺条目要原样写回')
+
+  const again = parseBackground(text)
+  assert.deepEqual(again.sections['人物关系'], ['甲 ↔ 乙：`第12章` 雨夜决裂'])
+  assert.deepEqual(Object.keys(again.groups['人物关系'] ?? {}), [], '平铺节解析后不该冒出主体')
 })
 
 test('实体键：主体名下的条目全被取代后，提示词里不留一个空标题', () => {
@@ -334,22 +351,22 @@ test('取代：散条目（非分组分区）也能被取代', () => {
 })
 
 test('取代：分组分区里的条目按主体寻址，不误伤同名条目', () => {
-  // 两条关系都提到"信任"，取代必须只动指定主体下的那一条。
+  // 两个主体的条目正文**逐字相同**，取代必须只动一条。
   const before = docOf([
     '<!-- drc-background: schema=1 covered=1..30 -->',
-    '## 人物关系',
-    '### 甲 × 乙',
-    '- `第10章` 建立信任',
-    '### 甲 × 丙',
-    '- `第10章` 建立信任',
+    '## 世界观',
+    '### 落霞谷',
+    '- `第10章` 三面环水',
+    '### 断魂崖',
+    '- `第10章` 三面环水',
   ])
   const after = mergeIn(before, [], { first: 60, last: 60 }, {
-    supersedes: ['`第10章` 建立信任'],
+    supersedes: ['`第10章` 三面环水'],
   })
 
   // 比对键是"去掉章节标记后的正文"，两条正文相同 —— 所以只该取代**一条**，
   // 另一条原样留着。这既是限制也是安全性：宁可少取代，不可连坐。
-  const total = Object.values(after.groups['人物关系']).flat().length
+  const total = Object.values(after.groups['世界观']).flat().length
   assert.equal(after.retired.length, 1)
   assert.equal(total, 1, '取代误伤了另一条同名条目')
 })
@@ -360,15 +377,15 @@ test('取代：分组分区里的条目按主体寻址，不误伤同名条目',
 
 test('压缩保主体：丢了分组主体就拒绝', () => {
   const before = mergeIn(parseBackground(''), [
-    '## 人物关系',
-    '### 甲 × 乙',
-    '- `第12章` 雨夜决裂',
+    '## 世界观',
+    '### 落霞谷',
+    '- `第12章` 三面环水',
     '## 人物',
     '### 甲',
     '- `第3章` 沉默寡言',
   ], { first: 1, last: 12 })
 
-  // 人物还在，但**关系那一对没了** —— 旧校验只看 `characters`，这里会放过去。
+  // 人物还在，但**那个设定没了** —— 旧校验只看 `characters`，这里会放过去。
   const after = mergeIn(parseBackground(''), [
     '## 人物',
     '### 甲',
@@ -378,9 +395,42 @@ test('压缩保主体：丢了分组主体就拒绝', () => {
   const verdict = validateCompaction(before, after)
   assert.equal(verdict.ok, false)
   assert.match(verdict.reason, /COMPACT_LOST_ENTITIES/)
-  assert.match(verdict.reason, /甲 × 乙/)
+  assert.match(verdict.reason, /落霞谷/)
   assert.equal(Object.keys(after.characters).length, Object.keys(before.characters).length,
     '这一个用例必须是被"保主体"拦下的，而不是被"保名"顺带拦下')
+})
+
+test('压缩保主体（平铺版）：「人物关系」里**对**一个都不能少，但合并是允许的', () => {
+  // ⚠️ 2026-10-04：「人物关系」从分组改回平铺之后 `groups` 里没有它 ⇒ 上面那条
+  //    「保主体」**管不到它**，而它是权重最高的一节（15/48）且 `compressible: true`。
+  //    判据刻意**不是"条目数不许净减"**：压缩对这一节的指令本身就是**合并**
+  //    （`buildCompactPrompt` 写的是"合并后一条 ≤80 字"，实测 19 条并成 8 条）
+  //    ⇒ 按条数卡会**否决每一次合法压缩**。要保的是"**对不能少**"。
+  const before = mergeIn(parseBackground(''), [
+    '## 人物关系',
+    '- 甲 ↔ 乙：同门 → 对手（`第3章` 起结怨）',
+    '- 甲 ↔ 乙：`第8章` 一起拜入师门',
+    '- 甲 ↔ 丙：师徒（`第9章`）',
+  ], { first: 1, last: 12 })
+
+  // ① **同一对的两条并成一条**（条目变少、正文也真的更短）必须放行。
+  const merged = mergeIn(parseBackground(''), [
+    '## 人物关系',
+    '- 甲 ↔ 乙：同门 → 对手（`第3章`；`第8章` 一起拜师）',
+    '- 甲 ↔ 丙：师徒（`第9章`）',
+  ], { first: 1, last: 12 })
+  assert.equal(validateCompaction(before, merged).ok, true, '同一对合并是合法压缩，不该被拦')
+
+  // ② 丢**一整对**必须被拦下，而且要说出丢的是哪一对。
+  const dropped = mergeIn(parseBackground(''), [
+    '## 人物关系',
+    '- 甲 ↔ 乙：同门 → 对手（`第3章` 起结怨）',
+    '- 甲 ↔ 乙：`第8章` 一起拜入师门',
+  ], { first: 1, last: 12 })
+  const verdict = validateCompaction(before, dropped)
+  assert.equal(verdict.ok, false, '整对关系消失必须拦下')
+  assert.match(verdict.reason, /COMPACT_LOST_PAIRS/)
+  assert.match(verdict.reason, /甲 ↔ 丙/, '要说出丢的是哪一对，读者才知道怎么补救')
 })
 
 test('压缩输入：归档区不送给压缩模型', async () => {
