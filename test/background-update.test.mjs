@@ -115,6 +115,10 @@ test('建议：三种"没写全"给出各自不同的理由', () => {
     ['节: 人物\n章: 3\n事实: 缺主体', 'NO_SUBJECT'],
     ['节: 人物\n主体: 沈某\n章: 3', 'EMPTY_FACT'],
     ['节: 人物\n主体: 沈某\n章: 第三章\n事实: 章号不是数字', 'CHAPTER_INVALID'],
+    // ⚠️ 2026-10-04 体检发现（已复现）：`章: 0` 从前被接受，于是写出 `` `第0章` ``，
+    //    而 `chapterSetIn` 只收 >0、`minChapterIn` 把 0 当"没有章号" ⇒ 那条**永久豁免**
+    //    倒退过滤与冷归档（章号信息等于丢了），而块本身看起来是合法的。下界必须判。
+    ['节: 人物\n主体: 沈某\n章: 0\n事实: 章号没有下界', 'CHAPTER_INVALID'],
   ]
   for (const [body, reason] of cases) {
     const { accepted, rejected } = parseBackgroundUpdates(block(body), { progressIndex: 9 })

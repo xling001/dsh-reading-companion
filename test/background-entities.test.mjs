@@ -479,6 +479,29 @@ test('压缩保章号：把条目的**定位锚**弄丢就拒绝（章号是唯�
   assert.equal(validateCompaction(noAnchors, alsoNoAnchors).ok, true, '没有章号的条目不该被这条拦')
 })
 
+test('压缩保章号：**照提示词写成区间**不许被判丢锚（区间覆盖中间那些章）', () => {
+  // ⚠️ 2026-10-04 体检发现（已复现）：`SHARED_COMPACT_RULES` 明写"合并后章号写成区间
+  //    （如 `第3-7章`）"，而守卫若只收区间**两端**，就会把"`第3章`+`第4章`+`第5章`
+  //    合并成 `第3-5章`"判成**丢了第 4 章** ⇒ 整批丢弃 ⇒ 那一节**永远压不掉**
+  //    （`needsCompaction` 仍 over ⇒ 反复白烧调用、读者收到 502）。
+  //    区间是**真实锚**：`minChapterIn` / `maxChapterIn` / `entryKey` 三处对区间的行为
+  //    与逐条写完全一致。
+  //    证伪：把 `chapterSetIn` 的区间展开去掉（只收两端）⇒ 本用例红。
+  const before = mergeIn(parseBackground(''), [
+    '## 人物',
+    '### 甲',
+    '- `第3章` 出身与处境，这一段特意写长一点，好让"必须变小"有真实余地。',
+    '- `第4章` 立场开始转变，同样写长一点。',
+    '- `第5章` 彻底倒向另一边，也写长一点。',
+  ], { first: 3, last: 5 })
+  const merged = mergeIn(parseBackground(''), [
+    '## 人物',
+    '### 甲',
+    '- `第3-5章` 出身与处境，后立场转变，彻底倒向另一边。',
+  ], { first: 3, last: 5 })
+  assert.equal(validateCompaction(before, merged).ok, true, '照提示词写成区间 ⇒ 必须放行')
+})
+
 test('压缩输入：归档区不送给压缩模型', async () => {
   // ⚠️ 这份夹具必须**留有可压缩的活内容**：如果 before 只剩归档，压缩会因
   // `COMPACT_NO_SHRINK` 而失败，用例就测不到归档那件事了。

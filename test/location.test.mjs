@@ -259,6 +259,38 @@ test('迁移：老位置的笔记被复制到工作区，且原文件保留', ()
   }
 })
 
+test('迁移：**历代备份**也要跟着走（新式名字从前一个都迁不走）', () => {
+  // ⚠️ 2026-10-04 体检发现（已复现）：迁移循环手写的判据是 `/^background\.bak.*\.md$/`，
+  //    它只认**遗留**的 `background.bak*`，而实际写出的名字是
+  //    `background.compactbak.<时间戳>.md` / `background.cleanbak.<时间戳>.md`
+  //    ⇒ **新式备份一个都迁不走**，与那段注释明写的意图正好相反：落点一变，历代快照
+  //    就留在旧目录里，而 `listBackgroundBackups` 只扫新目录 ⇒ 面板与导出都看不到它们；
+  //    `lastCompanionDir` 再被覆盖一次就**永久失去线索**（文件还在盘上，没人指向它）。
+  //    证伪：把判据改回 `^background\.bak` ⇒ 本用例红。
+  const f = makeFixture({ title: '备份迁移本' })
+  try {
+    const legacyDir = f.library.paths.bookDir(f.book.bookId)
+    // 两种族都种一份：新式的（这次修的）+ 遗留的（本来就认得）。
+    const fresh = 'background.compactbak.20260101-000000.md'
+    const legacy = 'background.bak.20251231-235959.md'
+    writeFileSync(join(legacyDir, fresh), '<!-- 压缩前的完整认识 -->\n', 'utf8')
+    writeFileSync(join(legacyDir, legacy), '<!-- 遗留名的那一代 -->\n', 'utf8')
+
+    f.library.bind(f.book.bookId, 'session-a', null, f.workspaceDir)
+    const location = f.library.ensureCompanionDir(f.book.bookId)
+    assert.ok(
+      location.migrated.includes(fresh),
+      `新式备份必须跟着走，实际迁移了 ${JSON.stringify(location.migrated)}`,
+    )
+    assert.ok(location.migrated.includes(legacy), '遗留名的那一代也要跟着走')
+    assert.ok(existsSync(join(location.dir, fresh)), '新式备份要真的出现在新位置')
+    // 与 notes.md 同一条规矩：**复制而非移动**，老位置保留。
+    assert.ok(existsSync(join(legacyDir, fresh)), '老位置必须保留（它是安全网）')
+  } finally {
+    f.cleanup()
+  }
+})
+
 test('迁移：目标已有笔记时不覆盖（用户在新位置写的更权威）', () => {
   const f = makeFixture({ title: '不覆盖' })
   try {

@@ -229,11 +229,50 @@ test('分区：旧文件（没有「文风」节）能正常解析，新节为�
   assert.equal(doc.unknown.trim(), '', '已有的四节内容不该掉进 unknown')
 })
 
+test('注入裁剪：同一个主体**不许渲染两遍**（置换级救回不许重复）', () => {
+  // ⚠️ 2026-10-04 体检发现（已复现）：第三级置换从 `skipped` 拷 `waiting` 时**没有排除
+  //    第二级已经粗化过的下标** ⇒ 那些下标被再救回一次 ⇒ `coarse` 出现重复
+  //    ⇒ 同一主体**渲染两遍**（白烧注入预算），而 `dropped` 把重复那部分算成"已展示"
+  //    ⇒ **少报**，连"本节另有 N 条未展示"都可能整句不出现
+  //    （体检脚本 6000 组随机：579 组重复，其中 43 组"主体被静默丢掉但 dropped=0"）。
+  //    证伪：把 `waiting` 改回 `[...skipped]` ⇒ 本用例红。
+  const lines = ['<!-- drc-background: schema=1 covered=1..20 -->', '## 人物']
+  for (let i = 1; i <= 6; i += 1) {
+    lines.push(`### 角色${i}`, `- \`第${i}章\` ${'很长'.repeat(6)}`, `- \`第${i + 10}章\` ${'也长'.repeat(6)}`)
+  }
+  const doc = parseBackground(lines.join('\n'))
+  let swept = 0
+  for (let budget = 90; budget <= 420; budget += 7) {
+    const { text } = renderBackgroundForPrompt(doc, { budgetChars: budget })
+    for (let i = 1; i <= 6; i += 1) {
+      const hits = text.split(`### 角色${i}`).length - 1
+      assert.ok(hits <= 1, `budgetChars=${budget} 时「角色${i}」渲染了 ${hits} 遍`)
+    }
+    swept += 1
+  }
+  assert.ok(swept > 20, '要真的扫过一段预算区间（否则等于没测）')
+})
+
 test('分区：空骨架里六个节的标题都在（用户打开文件就能看见该往哪写）', () => {
   const skeleton = emptyBackground('某书')
   for (const name of BACKGROUND_INJECTED_SECTIONS) {
     assert.match(skeleton, new RegExp(`^## ${name}$`, 'm'), `空骨架缺少「${name}」节`)
   }
+})
+
+test('顶部说明：**必须说出"压缩"这个例外**（它从前只承诺"不会删掉"）', () => {
+  // ⚠️ 2026-10-04：这段说明从前承诺"条目只增不减…**不会删掉**"，而**压缩是唯一会改写
+  //    内容的一步**（把同一节的条目合并、可能丢低频细节）—— 文件里一个字都没提
+  //    ⇒ 读者会以为这份记录是**全保真**的。补的两句是：① 压缩会改写；② 备份在哪、怎么找回。
+  //    ⚠️ 它必须是 **HTML 注释**（解析器跳过、永不进注入）—— 那一点由"骨架里以 `<!--` 开头"
+  //    这条断言顺带钉住。
+  //    证伪：把补的那两句删掉 ⇒ 下面三条红。
+  const skeleton = emptyBackground('某书')
+  const note = skeleton.split('\n').find((line) => line.startsWith('<!-- 这份文件是陪读'))
+  assert.ok(note !== undefined, '顶部说明必须还在')
+  assert.match(note, /压缩/, '必须点出"压缩"这个唯一的例外')
+  assert.match(note, /compactbak/, '必须给出备份的**真实文件名**（否则读者不知道去哪找）')
+  assert.match(note, /复制成 `background\.md`/, '必须说清"怎么找回" —— 不说，备份等于不存在')
 })
 
 test('分区：「文风（只写一次）」能存能渲染（描述叙述特征，不含剧情）', () => {

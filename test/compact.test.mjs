@@ -302,6 +302,42 @@ test('压缩目标的分母：**读者族变大不许改变注入节的额度**�
   assert.equal(big['人物'], small['人物'], '读者族变大 ⇒ 「人物」的额度不许变')
 })
 
+test('压缩提示词：那个"N 字以内"必须配一句"保内容优先"（它没有执行点）', () => {
+  // ⚠️ 2026-10-04：`validateCompaction` 只查"必须变小"与"本节不许变大"（容差 8 字），
+  //    **从不检查 N** ⇒ 不说这一句，模型会为一个**不被执行**的目标删内容，
+  //    而这与这份文件的用途（给读者一份**如实**的记录）**方向相反**。
+  //    证伪：删掉那句 ⇒ 下面两条红。
+  const prompt = buildCompactPrompt({ bookTitle: '书', section: '人物', sectionMarkdown: '## 人物\n### 甲\n- `第1章` x' })
+  assert.match(prompt, /总长度压到 \*\*\d+ 字以内\*\*/, '额度照旧要给（守卫靠它读每节的额度）')
+  assert.match(prompt, /保内容优先/, '必须明说"压不到不要硬删"')
+  assert.match(prompt, /比超一点字数糟得多/, '要把代价说清，否则模型仍会为那个数字删内容')
+})
+
+test('压缩关零：回执只有 `### 主体`、一条条目都没有 ⇒ 必须判"这一节没了"', async () => {
+  // ⚠️ 2026-10-04 体检发现（已复现）：关零从前只查"节在不在"（`sections` 空 **且**
+  //    `groups` 空），而 `parseBackground` 会为每个 `###` 建一个**空数组** ⇒ 模型只回标题时
+  //    `groups` 非空 ⇒ 关零放行，关一（主体都在）与关二（更小）也全过 ⇒
+  //    **整节的条目被静默删除、且不进任何归档**。
+  //    证伪：把关零改回"只看桶空不空" ⇒ 本用例红。
+  const before = parseBackground([
+    '<!-- drc-background: schema=1 covered=1..10 -->',
+    '## 人物',
+    '### 甲',
+    '- `第1章` 身份未明，写长一点好让"必须变小"有真实余地。',
+    '### 乙',
+    '- `第2章` 初登场，也写长一点。',
+  ].join('\n'))
+  const compactor = createCompactor({
+    startRun: async () => ({ output: [{ type: 'text', text: '## 人物\n### 甲\n### 乙' }] }),
+    getAgent: () => ({ id: 'parent' }),
+    getSubagents: () => undefined,
+    logger: {},
+  })
+  const result = await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
+  assert.equal(result.ok, false, '只回标题 ⇒ 绝不许判成功（那会静默删掉整节的条目）')
+  assert.match(String(result.reason), /COMPACT_SECTION_MISSING/)
+})
+
 test('压缩：不许用"合出巨段 / 超长条"来达标（2026-10-02 真机实测暴露）', () => {
   // ⚠️ 读者手动压缩那次（第一份成功的 `background.bak`）：**练霓裳整张卡被并成一条 715 字的巨段**
   //    （而规则是"一段 ≤200 字"），人物关系从 19 条并成 8 条、平均 **162 字**（规则是"一条 ≤80 字"）。

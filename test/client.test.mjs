@@ -846,6 +846,15 @@ test('补齐文案：自动打底（大缺口只补了开头）必须说清"还�
   // 真正的"没有缺口"照旧。
   const none = memoryFillClause({ kind: 'ok', data: { skipped: true } })
   assert.ok(!none.includes('面板'), '没有缺口时不该往面板指')
+
+  // ⚠️ 2026-10-04 体检发现（已复现）：补齐期间读者**清空重建**过背景认识时，宿主回
+  //    `{ skipped: true, resetDuringFill: true }` —— 这一支从前漏了，于是说
+  //    "前文记忆本来就是最新的，没有缺口"，而面板随后显示**缺口全书**（刚清空）
+  //    ⇒ 显示与磁盘矛盾。循环路径一直认这个字段，注释里也写着"否则那句话会变成谎话"。
+  //    证伪：删掉 `memoryFillClause` 里的 `resetDuringFill` 分支 ⇒ 下面两条红。
+  const reset = memoryFillClause({ kind: 'ok', data: { skipped: true, resetDuringFill: true, covered: null } })
+  assert.match(reset, /清空/, '要说清"清空重建"这件事')
+  assert.ok(!reset.includes('本来就是最新的'), '刚清空时绝不能说"没有缺口"')
 })
 
 //#endregion
