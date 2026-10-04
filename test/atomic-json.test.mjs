@@ -230,35 +230,25 @@ test('读不到 ≠ 不存在：非 ENOENT 的读失败标 unreadable，写路�
 /**
  * 刷盘句柄的**打开方式**（2026-10-04 实测修正）。
  *
- * 为什么值得两条用例：`atomicWriteText` 的"内容先落盘再 rename"**全部**建立在
+ * 为什么值得专门守着它：`atomicWriteText` 的"内容先落盘再 rename"**全部**建立在
  * `fsyncSync` 真的成功之上，而这件事在 JS 里**不可观测** —— 它成功与失败
  * （Windows 上只读句柄恒抛 `EPERM`，且被 best-effort 的 catch 吞掉）在盘上
  * 长得一模一样。所以守卫只能落在"打开方式"这个**可调用的机制**上：
  * `openForFsync` 是生产路径自己用的那个函数（不是为测试另写一份），
  * 于是"把可写句柄改回只读"会当场红。
  */
-test('刷盘句柄：文件以可写方式打开，fsync 必须真的成功', () => {
+test('刷盘句柄：文件与目录都要真的刷一次（Windows 上只读句柄恒 EPERM）', () => {
+  // ⚠️ 文件与目录走的是**同一个** `openForFsync`，差别只在实参 ⇒ 一个用例两个断言
+  //    就够，拆成两条同形用例只是把同一件事写两遍。
   const f = makeFile('{}')
   try {
-    const fd = openForFsync(f.path)
-    try {
-      assert.doesNotThrow(() => fsyncSync(fd), '可写句柄上的 fsync 不该失败（Windows 上只读句柄必 EPERM）')
-    } finally {
-      closeSync(fd)
-    }
-  } finally {
-    f.cleanup()
-  }
-})
-
-test('刷盘句柄：目录也能真的刷一次（Windows 上目录用只读句柄同样是 EPERM）', () => {
-  const f = makeFile('{}')
-  try {
-    const fd = openForFsync(f.dir)
-    try {
-      assert.doesNotThrow(() => fsyncSync(fd), '目录项也要能刷 —— rename 本身靠它持久')
-    } finally {
-      closeSync(fd)
+    for (const [what, target] of [['文件', f.path], ['目录', f.dir]]) {
+      const fd = openForFsync(target)
+      try {
+        assert.doesNotThrow(() => fsyncSync(fd), `${what}上的 fsync 不该失败（Windows 上只读句柄必 EPERM）`)
+      } finally {
+        closeSync(fd)
+      }
     }
   } finally {
     f.cleanup()

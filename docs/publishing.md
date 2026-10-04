@@ -153,40 +153,41 @@ against the installed state* 开头）：
 
 ---
 
-### 3.2 前置依赖：注册到**别人的**侧边栏
+### 3.2 前置依赖：注册到**DSH 本体**的侧边栏
 
-本插件**自己不画侧边栏**：它往 `dsh-better-sidebar` 提供的右侧栏里注册一个页签。
-这条依赖的声明方式值得单独记一笔，因为**最容易写错地方**。
+本插件**自己不画侧边栏**：它往 DSH 提供的右侧栏里注册一个页签。
+**它不依赖任何第三方插件** —— `dependencies` 与 `peerDependencies` 都是空的。
+这条声明方式值得单独记一笔，因为最容易写错地方。
 
-| 写法 | 管什么 | 用在这里对不对 |
+| 写法 | 管什么 | 用在这里 |
 |---|---|---|
-| `dsh.client.inject` | **客户端包之间的物化顺序** | ❌ 见下 |
-| cordis 的 `inject` | **服务是否就绪** | ✅ 本插件用的是这个 |
-| `peerDependencies`（optional） | 给人/工具读的元数据 | ✅ 补充声明 |
+| `dsh.client.inject` | **客户端模块之间的物化顺序** | ✅ 两个官方客户端模块 |
+| cordis 的 `inject` | **服务是否就绪** | ✅ `['sidebarRightTabs', 'slots']` |
+| `peerDependencies` | npm 层面的依赖 | ❌ **没有可声明的包**（见下） |
 
-**为什么不能用 `dsh.client.inject`。** 它对应的是"**你真的 `require()` 了那个包**"：
-`arriveGraphRow()` 会先递归到达 `row.inject` 里的包，再到达自己
-（`dsh-client-modules/lib/client.js:252-268`）。而本插件的浏览器半边唯一的
-`require()` 是 `require('react')`（`lib/client.js:31`），**并不 import
-`dsh-better-sidebar` 的 bundle**。更要紧的是那个循环写的是
-`if (dependency !== void 0)` ——**包不在图里就静默跳过**，
-所以它连"前置没装"这件事都表达不了。
+**那个服务是谁发布的（2026-10-04 实测更正）。** 这份文档从前写着"`sidebarRightTabs`
+是 `dsh-better-sidebar` 发布的服务名"，并据此在 `package.json` 里声明了一条 optional peer。
+**两句都是错的：**
 
-**真正起作用的是 cordis 级 `inject`**：`lib/client.js:4142`
-`const inject = ['sidebarRightTabs', 'slots']`。这是 `dsh-better-sidebar`
-发布的服务名；服务不出现 → cordis **不执行 `apply`、不报错、一直等**。
-这正是"缺前置时界面完全没有、控制台也没有任何错误"的确切来源。
+- `dsh-better-sidebar` 自己发布的服务叫 **`betterSidebar`**（`ctx.provide("betterSidebar", …)`），
+  而它**也是** `sidebarRightTabs` 的**消费方**（`ctx.inject(["sidebarRightTabs"], …)`）；
+- 这个服务来自 **DSH 本体**的客户端模块 `@deepseek-ai/dsh-client-ui-sidebar-right`
+  （同类插件 `dsh-image-gen` 的注释写着"DSH 0.1.5 `sidebarRightTabs`"）。它在 profile 的
+  `node_modules` 里**根本不存在**（壳在运行期提供）⇒ **没有 npm 包可以声明**。
 
-**`package.json` 里再声明一次 optional peer**，纯粹是为了让人和工具能读到它：
+⇒ 3.1.11 把那条 `peerDependencies` / `peerDependenciesMeta` 连同 README 的"前置"说法一起删掉了。
+判据还有一条旁证：本机 node_modules 里 8 个同类插件**没有一个**声明 `dsh-better-sidebar`；
+而本仓库封存件里早就写着"**不依赖**，主路径 native 三件套"。
 
-```jsonc
-"peerDependencies":     { "dsh-better-sidebar": ">=0.19.0" },
-"peerDependenciesMeta": { "dsh-better-sidebar": { "optional": true } }
-```
+**`dsh.client.inject` 声明的是"壳要加载哪些客户端模块"**：本插件写的是
+`["@deepseek-ai/dsh-client-ui-slots", "@deepseek-ai/dsh-client-ui-sidebar-right"]`
+（`package.json` 的 `dsh.client` 字段）。它**不是** npm 依赖 —— 那两个包不随包安装，
+所以**不能**、也不必写成 `peerDependencies`。
 
-标 `optional` 是**刻意**的：pnpm / npm 都不会因为这条声明**自动**把它装进用户的
-profile。一个体积不小的第三方插件被悄悄塞进别人的环境是越界的——装什么由用户决定。
-（也正因为如此，README 的「装法 A」自带一段让 DSH 主动检查并补齐前置的指令。）
+**真正决定"装配等不等"的是 cordis 级 `inject`**：`lib/client.js`
+`const inject = ['sidebarRightTabs', 'slots']`。服务不出现 → cordis **不执行 `apply`、
+不报错、一直等** —— 这正是"缺服务时界面完全没有、控制台也没有任何错误"的确切来源。
+所以 README 把**版本要求**写成了前置：`sidebarRightTabs` 是 DSH `0.1.5` 起才有的服务。
 
 ---
 

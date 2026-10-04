@@ -157,10 +157,13 @@
 
 ## 安装
 
-> [!IMPORTANT]
-> **前置：[dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) ≥ `0.19.0`（本仓库在 `0.19.1` 上验证）。**
-> 本插件**自己不画侧边栏**——它只是往别人提供的右侧栏里**注册一个页签**，那个接口（`sidebarRightTabs`）
-> 由它发布。缺了它的表现很坑：右侧栏「+」里**看不到「本地书架」**，而控制台**没有任何报错**。
+> [!NOTE]
+> **没有插件前置**：本插件不依赖任何第三方插件（`dependencies` / `peerDependencies` 都是空的）。
+> 它自己不画侧边栏——只是往 **DSH 本体**提供的右侧栏里**注册一个页签**。那个接口（`sidebarRightTabs`）
+> 是 DSH 的客户端模块 `@deepseek-ai/dsh-client-ui-sidebar-right` 发布的，由本插件的
+> `dsh.client.inject` 声明，**不需要额外装任何插件**。
+> 若右侧栏「+」里**看不到「本地书架」、而控制台没有任何报错**，那是 DSH 太老
+> （`sidebarRightTabs` 是 `0.1.5` 起才有的服务）—— 按下面的版本要求升级。
 
 **前置要求**：DSH ≥ `0.1.5-rc.2`、Node ≥ `22.19`（`engines: ^22.19.0 || >=24.0.0`）。
 
@@ -174,26 +177,18 @@
 1. 先确定 profile 目录：我用的是 DSH Desktop，profile 名应该是 desktop；如果我的环境实际属于别的面，
    请告诉我正确的 profile 名再继续。目录 = $DSH_HOME/profiles/<profile 名>，$DSH_HOME 默认 ~/.dsh。
    确认该目录下确实有 package.json 和 cordis.yml。
-2. 检查前置插件 dsh-better-sidebar（需要 >= 0.19.0）。先看 profile 的 package.json 里
-   dependencies 与 dsh.profile.bundles 有没有它。没有就先装，并告诉我最终版本号：
-   dsh plugin --profile <profile 名> add dsh-better-sidebar
-   这一步不能跳过：本插件的界面完全依赖它发布的 sidebarRightTabs 服务，缺了它右侧栏不会出现
-   「本地书架」，而且不会报任何错。
-3. 装本插件：
+2. 装本插件。它**没有插件前置**——不要顺手装别的插件：
    dsh plugin --profile <profile 名> add "github:xling001/dsh-reading-companion"
-4. 装完核对 profile 的 package.json 这两处：dependencies 里有 "dsh-reading-companion"、
+3. 装完核对 profile 的 package.json 这两处：dependencies 里有 "dsh-reading-companion"、
    dsh.profile.bundles 里有 "dsh-reading-companion"。缺哪条补哪条。
-5. 最后告诉我需要重启 DSH Desktop，以及重启后怎么验证装好了。
+4. 最后告诉我需要重启 DSH Desktop，以及重启后怎么验证装好了。
 ```
 
 <details>
 <summary>或者：命令行 / 手工 / 本地开发</summary>
 
 ```bash
-# 前置（没装过才需要）
-dsh plugin --profile desktop add dsh-better-sidebar   # Web 换成 --profile web
-
-# DSH Desktop / DSH Web
+# 本插件没有插件前置，直接装（DSH Desktop / DSH Web 各一行）
 dsh plugin --profile desktop add "github:xling001/dsh-reading-companion"
 dsh plugin --profile web     add "github:xling001/dsh-reading-companion"
 ```
@@ -233,8 +228,10 @@ node scripts/link-into-profile.mjs --profile desktop --unlink    # 完全回滚
 2. 列表里应出现「**本地书架**」（一本摊开的书的图标）；
 3. 点开进入**书架**视图。
 
-看不到时按顺序查：**前置装了没？**（这一步最容易被漏）→ **重启了没？**（右侧栏选择器的条目
-完全由插件注册的 `guide` 数组构建，看不到就是客户端半边没挂上）→ 都没有看控制台报错，请开 issue。
+看不到时按顺序查：**重启了没？**（`dsh.profile.bundles` 只在启动时读一次；右侧栏选择器的条目
+完全由插件注册的 `guide` 数组构建，看不到就是客户端半边没挂上）→ **DSH 版本够不够？**
+（`sidebarRightTabs` 是 `0.1.5` 起才有的服务，缺了它 cordis 不执行 `apply`、**也不报错**）
+→ 都没有看控制台报错，请开 issue。
 
 接着导一本书、读一章、记一条笔记。最短全流程与发版前的真机回归清单在 [`docs/manual-testing.md`](./docs/manual-testing.md)（⚠️ 这份是**开发用**的，不随包发布）。
 
