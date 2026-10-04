@@ -250,6 +250,58 @@ test('压缩提示词：要求 4 按**形状**分叉（平铺节不许诱导造 
   assert.ok(!style.includes('主体都要还在'), '文风没有主体 ⇒ 不许要求"主体都要在"')
 })
 
+test('压缩目标的分母：**读者族变大不许改变注入节的额度**（2026-10-04 修）', async () => {
+  // ⚠️ 触发压缩量的是**注入族**（`needsCompaction` → `renderBackgroundForPrompt`；
+  //    读者族**永不注入**、量不到），而每节目标的分母从前用的是 `renderBackground(...)`
+  //    = **整份文件**（含**永不压缩**的读者族）⇒ **读者族越大、注入节的额度越小**。
+  //    而 `sections.js` 自己写着"分线时间轴是**全文件最占地方**的" ⇒ 恰好在**长篇**
+  //    （最需要压缩的那种）上把「人物关系」「人物」削得比设计意图狠一倍，
+  //    而读者族自己**一个字都不会被压**。实测《神雕侠侣》：分母被放大 ≈ 9%。
+  //
+  //    证伪：把分母改回 `renderBackground(before, …, { includeRetired: false }).length`
+  //    ⇒ 下面两条 `equal` 红（读者族一变，额度就跟着变）。
+  const targetsOf = async (readerRepeat) => {
+    const before = parseBackground([
+      '<!-- drc-background: schema=1 covered=1..10 -->',
+      '## 人物关系',
+      '- 甲 ↔ 乙：对手（`第2章`）',
+      '## 人物',
+      '### 甲',
+      '- `第1章` 身份未明',
+      '## 时间与分线',
+      '### 主线',
+      `- \`第1-4年\` 骨架：${'很长'.repeat(readerRepeat)}`,
+    ].join('\n'))
+    const seen = {}
+    const compactor = createCompactor({
+      startRun: async (spec) => {
+        const section = String(spec.label).split(':').pop()
+        // ⚠️ `spec.prompt` 是**消息数组**（`[{type:'text', text:…}]`），不是字符串 ——
+        //    直接 `String(spec.prompt)` 只会得到 `[object Object]`（这里踩过一次）。
+        const text = (Array.isArray(spec.prompt) ? spec.prompt : [])
+          .map((part) => (typeof part === 'string' ? part : part?.text ?? ''))
+          .join('\n')
+        seen[section] = /总长度压到 \*\*(\d+) 字以内\*\*/.exec(text)?.[1]
+        // 回执只要**保住对与章号**就行（这一条测的是额度，不是产出）。
+        return { output: [{ type: 'text', text: section === '人物关系'
+          ? '## 人物关系\n- 甲 ↔ 乙：对手（`第2章`）'
+          : '## 人物\n### 甲\n- `第1章` 身份未明' }] }
+      },
+      getAgent: () => ({ id: 'parent' }),
+      getSubagents: () => undefined,
+      logger: {},
+    })
+    await compactor({ sessionId: 's', bookTitle: '书', markdown: 'x', doc: before })
+    return seen
+  }
+
+  const small = await targetsOf(1)
+  const big = await targetsOf(200)
+  assert.ok(small['人物关系'] !== undefined && big['人物关系'] !== undefined, '要能从提示词里读到每节的额度')
+  assert.equal(big['人物关系'], small['人物关系'], '读者族变大 ⇒ 「人物关系」的额度不许变')
+  assert.equal(big['人物'], small['人物'], '读者族变大 ⇒ 「人物」的额度不许变')
+})
+
 test('压缩：不许用"合出巨段 / 超长条"来达标（2026-10-02 真机实测暴露）', () => {
   // ⚠️ 读者手动压缩那次（第一份成功的 `background.bak`）：**练霓裳整张卡被并成一条 715 字的巨段**
   //    （而规则是"一段 ≤200 字"），人物关系从 19 条并成 8 条、平均 **162 字**（规则是"一条 ≤80 字"）。
