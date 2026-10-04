@@ -98,7 +98,11 @@ test('缓存顺序：动态值一个都不能留在稳定前缀里', () => {
   const stable = text.slice(0, measureCacheSplit(text).stable)
 
   // 这几样都是"每章/每天会变"的，出现在稳定区就等于缓存失效。
-  assert.doesNotMatch(stable, /当前读到/, '进度不能出现在稳定区')
+  // ⚠️ 匹配**动态标记的真实形状**（`- 读者当前读到：**第 N 章**`，渲染处见 `spoiler.js`），
+  //    不要用裸词"当前读到" —— 稳定文案里也会出现这个说法（守则第 8 条的格式说明里写着
+  //    "你**当前读到的那一章**"，2026-10-04 加那句时这条就误报了一次）。
+  //    与本文件下面"只匹配标题行"是同一类处理（"已读内容"那次已经踩过一次）。
+  assert.doesNotMatch(stable, /读者当前读到/, '进度不能出现在稳定区')
   assert.doesNotMatch(stable, /今天：/, '日期不能出现在稳定区')
   assert.doesNotMatch(stable, /距上次/, '时间感知不能出现在稳定区')
   // ⚠️ 只匹配**标题行**。头部那段说明里确实有「已读内容」这四个字（它在
@@ -107,7 +111,7 @@ test('缓存顺序：动态值一个都不能留在稳定前缀里', () => {
 
   // 而它们必须在**动态区**里真的出现，否则就是功能丢了。
   const dynamic = text.slice(measureCacheSplit(text).stable)
-  assert.match(dynamic, /当前读到/)
+  assert.match(dynamic, /读者当前读到/)
   assert.match(dynamic, /今天：/)
   assert.match(dynamic, /已读内容/)
 })

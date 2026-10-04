@@ -20,6 +20,8 @@ import {
   BACKGROUND_GROUPED_SECTIONS,
   BACKGROUND_INJECTED_SECTIONS,
   BACKGROUND_LEGACY_SECTIONS,
+  BACKGROUND_PROMPT_SECTIONS,
+  BACKGROUND_READER_SECTIONS,
   BACKGROUND_SECTION_WEIGHTS,
   BACKGROUND_SECTIONS,
   emptyBackground,
@@ -299,27 +301,37 @@ test('接线：更新块指定兜底 + 主体时才通过；缺主体被拒', ()
   assert.equal(missing.ok, false)
   assert.equal(missing.reason, 'NO_SUBJECT')
 
-  // 端到端：说明里给出的**节名清单必须与校验器接受的一致**。
+  // 端到端：说明里给出的**节名清单必须与"聊天看得见的节"一致**。
   // ⚠️ 2026-10-03 改成**关系断言**：原先这里钉的是手写的 5 个名字（`includes('「人物 / …」之一')`），
   //    而校验器接受 9 节 —— 于是"清单与校验器一致"这句承诺**根本没有代码载体**，
-  //    两处漂移了也不知道（正是本仓库反复栽的"同一概念多份定义"）。现在两边都从
-  //    `BACKGROUND_SECTIONS` / `isGroupedSection` 派生，谁改单边这条就红。
-  // ⚠️ 口径是"**校验器接受的** 减去 **legacy**"：旧「前文脉络」仍被接受（旧文件里真有
-  //    这些内容，接受才不至于丢掉修正），但**不宣传**（它已并入「时间与分线」）。
+  //    两处漂移了也不知道（正是本仓库反复栽的"同一概念多份定义"）。现在两边都从注册表派生。
+  //
+  // ⚠️ 2026-10-04 **口径修正**：从"校验器接受的全部节"改成"**聊天 AI 真正看得到的节**"
+  //    （`BACKGROUND_PROMPT_SECTIONS` = 元判断族 + 注入族，7 节）。差别是读者族的
+  //    「时间与分线」「冷档案」—— 它们**永不注入**，聊天 AI 从没见过，而 `冷档案`
+  //    更是代码侧归档区。列进清单的后果不是"白写"：模型会以为那些节它也该管，
+  //    把修正**写进永不被它读到的分区**（记了等于没记）。
+  //    校验器**照旧接受**那些名字（接受得宽是为了不悄悄丢掉一条修正），只是**不宣传**。
   const instruction = renderUpdateInstruction()
-  const advertised = BACKGROUND_SECTIONS.filter((name) => !BACKGROUND_LEGACY_SECTIONS.includes(name))
-  for (const name of advertised) {
-    assert.ok(instruction.includes(name), `说明书必须列出校验器接受的每一节，缺「${name}」`)
+  for (const name of BACKGROUND_PROMPT_SECTIONS) {
+    assert.ok(instruction.includes(name), `说明书必须列出聊天看得见的每一节，缺「${name}」`)
+  }
+  for (const hidden of BACKGROUND_READER_SECTIONS) {
+    assert.equal(
+      instruction.includes(hidden),
+      false,
+      `永不注入的「${hidden}」不许出现在"照抄这个"的清单里（模型会往一个它永远读不到的分区写）`,
+    )
   }
   for (const legacy of BACKGROUND_LEGACY_SECTIONS) {
     assert.equal(instruction.includes(legacy), false, `legacy 名「${legacy}」不许出现在"照抄这个"的清单里`)
   }
-  // "必须给 `主体`"点名的必须**正好是分组节**（走 isGroupedSection，别手写第二份清单）
+  // "必须给 `主体`"点名的必须**正好是清单里的分组节**（走 isGroupedSection，别手写第二份清单）
   const subjectClause = /其中「([^」]+)」\*\*必须给/.exec(instruction)
   assert.ok(subjectClause !== null, '说明书必须点明哪些节需要 `主体`')
   assert.deepEqual(
     subjectClause[1].split(' / ').slice().sort(),
-    advertised.filter((name) => isGroupedSection(name)).slice().sort(),
+    BACKGROUND_PROMPT_SECTIONS.filter((name) => isGroupedSection(name)).slice().sort(),
     '「必须给主体」点名错了会让模型照说明书写、然后被 NO_SUBJECT 拒掉（「文风」不是分组节、「通用概念」是）',
   )
   const text = [

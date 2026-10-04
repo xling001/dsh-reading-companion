@@ -144,12 +144,20 @@ test('建议：平铺分区（文风 / 前文脉络）不需要主体', () => {
 test('安全：说明里的示例必须能被它自己的解析器接受（否则等于教模型写废块）', () => {
   // 第一版示例写的是 `章: <这个事实属于第几章>`，它通不过本模块自己的校验。
   // 一个要模型照抄的示例，起码得是它自己的解析器接受的形状。
-  const { accepted, rejected } = parseBackgroundUpdates(renderUpdateInstruction(), { progressIndex: 999 })
-  assert.deepEqual(rejected, [], '守则里的示例块被自己的校验拒绝了')
-  assert.equal(accepted.length, 1)
-  assert.equal(accepted[0].section, '人物')
-  assert.equal(accepted[0].subject, '沈某')
-  assert.equal(accepted[0].chapter, 30)
+  //
+  // ⚠️ 2026-10-04 加强：第二版示例写死 `章: 30`，**它在进度不到第 29 章时会被
+  //    `CHAPTER_AHEAD` 整条丢弃** —— 而这条断言当时只跑 `progressIndex: 999`，
+  //    **证明不了前 29 章可用**（一个"任何进度下都该合法"的示例，只测一个进度等于没测）。
+  //    现在示例省略 `章`（缺省 = 当前章），断言也在**多个进度**下跑。
+  //    证伪：把示例改回 `章: 30` ⇒ progressIndex 0 / 9 / 27 / 28 四轮红。
+  for (const progressIndex of [0, 9, 27, 28, 29, 999]) {
+    const { accepted, rejected } = parseBackgroundUpdates(renderUpdateInstruction(), { progressIndex })
+    assert.deepEqual(rejected, [], `示例块在 progressIndex=${progressIndex} 时被自己的校验拒绝了`)
+    assert.equal(accepted.length, 1)
+    assert.equal(accepted[0].section, '人物')
+    assert.equal(accepted[0].subject, '沈某')
+    assert.equal(accepted[0].chapter, progressIndex + 1, '省略 `章` ⇒ 缺省"当前读到的这一章"')
+  }
 })
 
 test('建议：没有标记的文本直接回空，且不跑正则', () => {

@@ -540,10 +540,10 @@ test('分节作业：一节的失败**重试一次** —— "没睡醒"不该让
   const before = parseBackground([
     '<!-- drc-background: schema=1 covered=1..10 -->',
     '## 人物关系',
-    '- 甲 ↔ 乙：对手（`第2章`）',
+    '- 甲 ↔ 乙：对手，这一段特意写长一些（`第2章`）',
     '## 人物',
     '### 甲',
-    '- `第1章` 身份未明',
+    '- `第1章` 身份未明，这一段也特意写长一些',
   ].join('\n'))
   const compactor = createCompactor({
     startRun: async (spec) => {
@@ -556,8 +556,10 @@ test('分节作业：一节的失败**重试一次** —— "没睡醒"不该让
       // ⚠️ 「人物关系」的回执必须**保住那一对**（`- 甲 ↔ 乙：…`）：它 2026-10-04 改回
       //    平铺之后，压缩侧的「保主体」按**条目开头的双方**比对（`COMPACT_LOST_PAIRS`）
       //    —— 回一句不带双方的"原样"就等于把这对关系丢了，会被正确地拦下。
+      //    ⚠️ 同理必须**保住章号**（`COMPACT_LOST_ANCHORS`）：把 `第2章` 换成不带锚的
+      //    "原样"也是一次真实的丢锚（章号是这份文件唯一的定位手段）。
       return { output: [{ type: 'text', text: section === '人物关系'
-        ? '## 人物关系\n- 甲 ↔ 乙：原样。'
+        ? '## 人物关系\n- 甲 ↔ 乙：原样（`第2章`）。'
         : `## ${section}\n- \`第1章\` 原样。` }] }
     },
     getAgent: () => ({ id: 'parent' }),
@@ -599,7 +601,7 @@ test('分节作业：报出来的耗时**含重试那一趟**（2026-10-02 三�
         attempts += 1
         await new Promise((resolve) => setTimeout(resolve, 30))
         if (attempts === 1) return { output: [] } // 第一次"没睡醒"（空输出）
-        return { output: [{ type: 'text', text: '## 人物关系\n- 甲 ↔ 乙：朋友反目。' }] }
+        return { output: [{ type: 'text', text: '## 人物关系\n- 甲 ↔ 乙：朋友反目（`第2章`）。' }] }
       }
       return { output: [{ type: 'text', text: `## ${section}\n- \`第1章\` 原样。` }] }
     },
@@ -630,10 +632,11 @@ test('分节作业（并发）：各节的调用**同时开跑** —— wall-clo
       events.push({ kind: 'start', section, at: Date.now() })
       await new Promise((resolve) => setTimeout(resolve, 60))
       events.push({ kind: 'end', section, at: Date.now() })
-      // ⚠️ 同上：平铺的「人物关系」回执必须保住那一对，否则被 `COMPACT_LOST_PAIRS` 拦下。
+      // ⚠️ 同上：平铺的「人物关系」回执必须保住那一对**与章号**，否则被
+      //    `COMPACT_LOST_PAIRS` / `COMPACT_LOST_ANCHORS` 拦下。
       return { output: [{ type: 'text', text: section === '人物关系'
-        ? '## 人物关系\n- 甲 ↔ 乙：压缩后的条目。'
-        : `## ${section}\n### 甲\n- \`第1章\` 压缩后的条目。` }] }
+        ? '## 人物关系\n- 甲 ↔ 乙：压缩后的条目（`第2章`、`第5章`）。'
+        : `## ${section}\n### 甲\n- \`第1-2章\` 压缩后的条目。` }] }
     },
     getAgent: () => ({ id: 'parent' }),
     getSubagents: () => undefined,

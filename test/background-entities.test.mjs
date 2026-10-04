@@ -433,6 +433,52 @@ test('压缩保主体（平铺版）：「人物关系」里**对**一个都不�
   assert.match(verdict.reason, /甲 ↔ 丙/, '要说出丢的是哪一对，读者才知道怎么补救')
 })
 
+test('压缩保章号：把条目的**定位锚**弄丢就拒绝（章号是唯一的定位手段）', () => {
+  // ⚠️ 章号三处机制都吃：**倒退过滤**（判会不会剧透）、**冷归档**（判是否过老）、
+  //    **取代/去重**（`entryKey` 剥掉它之后比对）。丢一个 ⇒ 那条记忆**再也无法被定位**，
+  //    而**文件里看不出少了什么**（静默）。
+  //    2026-10-04 评审发现：压缩提示词只在两节写了"章号别丢"，其余节没有，而代码
+  //    从前**一条都不查**（`validateCompaction` 只查 covered / 主体 / 变小）。
+  //
+  //    证伪：把 `validateCompaction` 里那段 `COMPACT_LOST_ANCHORS` 删掉 ⇒ 下面第二条红。
+  const before = mergeIn(parseBackground(''), [
+    '## 人物',
+    '### 甲',
+    '- `第1章` 出身与处境，这一段特意写长一点，好让"必须变小"有真实余地。',
+    '- `第9章` 立场转变，同样写长一点。',
+  ], { first: 1, last: 9 })
+
+  // ① 合并成**区间**、两端章号都还在 ⇒ 放行（这是压缩的正常动作）。
+  const merged = mergeIn(parseBackground(''), [
+    '## 人物',
+    '### 甲',
+    '- `第1-9章` 出身与处境，后立场转变。',
+  ], { first: 1, last: 9 })
+  assert.equal(validateCompaction(before, merged).ok, true, '合并成区间、两端章号都在 ⇒ 合法压缩')
+
+  // ② 合并时把章号**并丢** ⇒ 拦下，并说出丢的是哪几章。
+  const anchorLost = mergeIn(parseBackground(''), [
+    '## 人物',
+    '### 甲',
+    '- 出身与处境，后立场转变。',
+  ], { first: 1, last: 9 })
+  const verdict = validateCompaction(before, anchorLost)
+  assert.equal(verdict.ok, false, '章号丢光必须拦下')
+  assert.match(verdict.reason, /COMPACT_LOST_ANCHORS/)
+  assert.match(verdict.reason, /第 1、9 章/, '要说出丢的是哪几章')
+
+  // ③ 反向：**本来就没有章号**的条目不算丢（读者手写的、或通用设定是合法的）。
+  const noAnchors = mergeIn(parseBackground(''), [
+    '## 世界观',
+    '- 江湖与魔教，势力众多、规矩森严，这一段特意写长一些。',
+  ], { first: 1, last: 9 })
+  const alsoNoAnchors = mergeIn(parseBackground(''), [
+    '## 世界观',
+    '- 江湖、魔教。',
+  ], { first: 1, last: 9 })
+  assert.equal(validateCompaction(noAnchors, alsoNoAnchors).ok, true, '没有章号的条目不该被这条拦')
+})
+
 test('压缩输入：归档区不送给压缩模型', async () => {
   // ⚠️ 这份夹具必须**留有可压缩的活内容**：如果 before 只剩归档，压缩会因
   // `COMPACT_NO_SHRINK` 而失败，用例就测不到归档那件事了。
