@@ -1628,3 +1628,24 @@ test('同一对自动并进（2026-10-05）：**同一方向**并进同一条；
     f.cleanup()
   }
 })
+
+test('同一对并进：新内容插在**末尾括号之前**，且不留重复括号（2026-10-05 真机）', () => {
+  // ⚠️ 真机《魔女霓裳》抓到的形状：这一节的约定是「**关系演变写在末尾的括号里**」✓，
+  //    而"直接追加到末尾"会产出 \`…（师徒）；\`第32章\` 跪求…；…（师徒）\` ✗
+  //    —— 括号后面还有内容 ✗、括号还重复 ✗。这条钉的就是"插在括号之前 + 只留一个括号" ✓。
+  const f = makeFixture()
+  try {
+    const bookId = f.book.bookId
+    // ⚠️ 真实形状（照真机文件写）：**章号锚点内联**（\`\`第2章\`\`）、**括号只装关系演变** ✓。
+    f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 甲 ↔ 乙：\`第2章\` 同门受教。（师徒）\n'), { first: 1, last: 2 })
+    f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 甲 ↔ 乙：\`第9章\` 反目成仇。（师徒 → 仇敌）\n'), { first: 9, last: 9 })
+    const line = f.library.background(bookId).sections['人物关系'][0]
+    assert.match(line, /（师徒 → 仇敌）$/, '⭐ 末尾括号是**最新的演变**、且在**最后**')
+    assert.equal((line.match(/（/g) ?? []).length, 1, '只留一个括号（不许重复）')
+    assert.ok(line.includes('同门受教'), '旧内容还在')
+    assert.ok(line.includes('反目成仇'), '新内容并进来了')
+    assert.ok(line.indexOf('反目成仇') < line.indexOf('（师徒 → 仇敌）'), '内容在括号之前')
+  } finally {
+    f.cleanup()
+  }
+})
