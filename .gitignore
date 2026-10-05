@@ -8,3 +8,7 @@ Thumbs.db
 # 本机的 DSH 安装路径（test/cordis-integration.test.mjs 用）。
 # 每人一行自己的路径，不入库。
 .dsh-app-path
+
+# 设计过程文档：与读者的自然语言设计交流，不属于代码，不上传（文件仍留在本地）
+docs/design-history.md
+docs/design-v1-archive.md
