@@ -1015,10 +1015,12 @@ test('背景认识：条目只增不减，重复条目会去重', () => {
     let doc = f.library.background(bookId)
     assert.equal(doc.sections['人物关系'].length, 1, '同一描述不该重复')
 
-    // 新内容追加。
+    // 新内容追加 —— ⚠️ **2026-10-05（同一对自动并进）**：同一对**不再另起一行** ✓，
+    //    而是**并进已有那一条**（读者拍板"一对人一条" ✓）⇒ 条数仍是 1，但内容都在 ✓。
     f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 甲 ↔ 乙：同盟（`第5章`）\n'), { first: 4, last: 5 })
     doc = f.library.background(bookId)
-    assert.equal(doc.sections['人物关系'].length, 2, '新描述应当追加')
+    assert.equal(doc.sections['人物关系'].length, 1, '同一对只留一条（并进，不另起）')
+    assert.match(doc.sections['人物关系'][0], /同盟/, '新描述要**并进那一条**里')
     assert.deepEqual(doc.covered, { first: 1, last: 5 }, '覆盖区间应当往后长')
 
     // 既有条目绝不因为"这次模型没提"而消失。
@@ -1585,3 +1587,44 @@ test('倒退过滤：讨论时间线也要过水位线 —— 第 900 章聊过�
 })
 
 //#endregion
+
+test('同一对自动并进（2026-10-05）：**同一方向**并进同一条；**双向分开算两条**', () => {
+  // ⚠️ 口径改过一次，两段历史都在这里：
+  //   · 2026-10-05 白天：读者要"一对人一条" ⇒ 我做成**与方向无关**的并进 ✓
+  //   · 2026-10-05 晚（真机《魔女霓裳》）：读者拍板「**双向**人物关系还是**分开视角算两条**，
+  //     两个视角下**不算重复**」✓ ⇒ 键改成**方向敏感** ✓
+  //   · 同一批真机还抓到：模型把**同一段关系史写了两遍** ✗ ⇒ 并进必须**按段去重** ✓
+  const f = makeFixture()
+  try {
+    const bookId = f.book.bookId
+    f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 甲 ↔ 乙：对手（`第2章`）\n'), { first: 1, last: 2 })
+
+    // ① **反方向** = 另一个视角 ⇒ **另起一条** ✓（不算重复）
+    f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 乙 ↔ 甲：同盟（`第5章`）\n'), { first: 5, last: 5 })
+    let doc = f.library.background(bookId)
+    assert.equal(doc.sections['人物关系'].length, 2, '⭐ 双向 ⇒ 分开视角算两条（读者 2026-10-05 拍板）')
+    assert.ok(doc.sections['人物关系'].some((l) => l.startsWith('甲 ↔ 乙：')), '甲的视角那条在')
+    assert.ok(doc.sections['人物关系'].some((l) => l.startsWith('乙 ↔ 甲：')), '乙的视角那条在')
+
+    // ② **同方向 + 同内容** ⇒ 并进**不翻倍**（真机抓到的形状：同一段写了两遍 ✗）
+    f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 甲 ↔ 乙：对手（`第3章`）\n'), { first: 3, last: 3 })
+    doc = f.library.background(bookId)
+    const first = doc.sections['人物关系'].find((l) => l.startsWith('甲 ↔ 乙：'))
+    assert.equal((first.match(/对手/g) ?? []).length, 1, '⭐ 同一段不许出现两遍（按段去重）')
+    assert.doesNotMatch(first, /甲 ↔ 乙：.*甲 ↔ 乙：/, '不许拼出重复的对名前缀')
+
+    // ③ 同方向 + **新内容** ⇒ 并进那一条（不另起）
+    f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 甲 ↔ 乙：同门（`第8章`）\n'), { first: 8, last: 8 })
+    doc = f.library.background(bookId)
+    assert.equal(doc.sections['人物关系'].length, 2, '同方向的新内容并进那一条 ⇒ 条数不变')
+    const merged = doc.sections['人物关系'].find((l) => l.startsWith('甲 ↔ 乙：'))
+    assert.match(merged, /对手/)
+    assert.match(merged, /同门/, '新内容要并进去')
+
+    // ④ 不同对仍然各一条
+    f.library.backgroundMerge(bookId, parseBackground('## 人物关系\n- 甲 ↔ 丙：同门（`第9章`）\n'), { first: 9, last: 9 })
+    assert.equal(f.library.background(bookId).sections['人物关系'].length, 3, '不同对要各留一条')
+  } finally {
+    f.cleanup()
+  }
+})

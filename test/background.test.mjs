@@ -718,10 +718,14 @@ test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A
   //
   //    判据：**片与片之间是"读得通"的边界，不是"该不该给"的边界** ——
   //    "该不该给"应该由**每一个锚自己的章号**回答，而不是由标点或括号形状回答。
+  //    ⚠️ **2026-10-05（C）夹具从「人物」换成「世界观」**：C 把「人物」**恒定压成索引行**
+  //    （一人一行、只给最新一条）⇒ 多片条目在这条路上**只剩最后一片** ✗ —— 而这条用例钉的是
+  //    **切句机制**（每片各自按锚判），不是"人物给几条"。分组节里**仍走深度优先**的「世界观」
+  //    与它同源同路 ⇒ 夹具换过去，判据一个字不用改 ✓。
   const seps = ['，', ' ', '：', '、', '——', '（', '[', '「', '；', '。']
   for (const sep of seps) {
     const doc = parseBackground([
-      '## 人物',
+      '## 世界观',
       '### 甲',
       `- \`第3章\` 甲遇见同伴${sep}\`第50章\` 其实是幕后黑手。`,
     ].join('\n'))
@@ -730,7 +734,7 @@ test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A
     assert.doesNotMatch(out.text, /幕后黑手/, `未读的那半句不许进提示词（分隔符 ${JSON.stringify(sep)}）`)
     // "截了就要说"：丢掉的条数必须报给面板。
     assert.equal(
-      out.filtered.find((item) => item.name === '人物')?.sentences,
+      out.filtered.find((item) => item.name === '世界观')?.sentences,
       1,
       `被挡住的条数要如实报（分隔符 ${JSON.stringify(sep)}）`,
     )
@@ -739,7 +743,7 @@ test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A
   // 括号**闭合**、而且括注里的章号**已经读到了**（第9章 ≤ 20）⇒ 两片都留着，
   // 而且**不许留下括号残肢**（`出场（` / `才又提到）` 这种读起来是坏的）。
   const closedReadable = parseBackground([
-    '## 人物',
+    '## 世界观',
     '### 丁',
     '- `第3章` 出场（`第9章` 才又提到）。',
   ].join('\n'))
@@ -750,7 +754,7 @@ test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A
   assert.doesNotMatch(readableOut.text, /才又提到）/, '闭括号残肢也要清掉（哪怕它后面还跟着句号）')
 
   // 读到第 60 章时两片都得在（切开**不丢字**，只是把一条拆成两条）。
-  const both = parseBackground(['## 人物', '### 甲', '- `第3章` 甲遇见同伴，`第50章` 其实是幕后黑手。'].join('\n'))
+  const both = parseBackground(['## 世界观', '### 甲', '- `第3章` 甲遇见同伴，`第50章` 其实是幕后黑手。'].join('\n'))
   const bothOut = renderBackgroundForPrompt(both, { budgetChars: 9000, maxChapter: 60 })
   assert.match(bothOut.text, /甲遇见同伴/)
   assert.match(bothOut.text, /幕后黑手/)
@@ -758,7 +762,7 @@ test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A
   // ⚠️ **反向守卫**：只有**一个**锚的条目原样返回 —— 正常的括注（`甲（人称「小三儿」）`）
   //    不许被这次改动碰到（它没有第二个锚，压根不进切分逻辑）。
   const plain = parseBackground([
-    '## 人物',
+    '## 世界观',
     '### 戊',
     '- `第3章` 甲（人称「小三儿」）出身寒门，被师父收留。',
   ].join('\n'))
@@ -768,7 +772,7 @@ test('倒退过滤：**每个章号锚都切**（2026-10-02 读者拍板方案 A
   // ⚠️ **另一条反向守卫**：多锚条目在**都读到**时，切出来的每片仍要读得通
   //    （片与片按顺序渲染成相邻条目 ⇒ 合起来还是原话）。
   const ordered = parseBackground([
-    '## 人物',
+    '## 世界观',
     '### 己',
     '- `第5章` 出身寒门。`第9章` 拜入师门。`第12章` 立下大愿。',
   ].join('\n'))
@@ -803,7 +807,7 @@ const OFFLINE_DOC = [
   '- `第90章` 被围城中。',
 ].join('\n')
 
-test('在线折叠：离场人物（最后提及距今 ≥ 阈值）⇒ 注入只留锚，状态行不进提示词', () => {
+test('在线折叠：离场人物（最后提及距今 ≥ 阈值）⇒ 不给状态后缀 + 折叠记号（C 之后「人物」恒一行）', () => {
   const doc = parseBackground(OFFLINE_DOC)
   const r = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 89, personOfflineChapters: 60 })
   // 甲：读第 90 章 − 最后提及第 20 章 = 70 ≥ 60 ⇒ 折叠
@@ -812,17 +816,22 @@ test('在线折叠：离场人物（最后提及距今 ≥ 阈值）⇒ 注入�
   const 人物起 = r.text.indexOf('### 人物' + '\n')
   const 人物止 = r.text.indexOf('（+', 人物起)
   const pessoa段 = r.text.slice(人物起, 人物止 === -1 ? undefined : 人物止)
+  // ⚠️ **2026-10-05（C）：折叠在「人物」上不再改变正文行** —— C 已经恒定"一人一行、
+  //    只给最新一条"，而折叠做的正是同一件事 ⇒ 两者结果**逐字相同** ✗。
+  //    折叠剩下的**可观测效果只有两处**：① **离场的人不给状态后缀**（一句过期现状
+  //    摆在面前比没有更糟 —— 那正是折叠当初的理由）；② 记号与台账。
+  //    ⇒ 断言改到这两处（否则测的是"C 已经替你做的事"，而"状态不注入"这条会漏掉 ✗）。
   assert.ok(pessoa段.includes('离开了渡口'), '锚（最新一条）必须在')
-  assert.ok(!pessoa段.includes('渡口少年'), '更早的条目不随行（折叠成一条）')
+  assert.ok(!pessoa段.includes('渡口少年'), '更早的条目不随行（一人一行）')
   // ⚠️ 2026-10-06 起：**提示词里折叠与粗化合成一个 `（+N）` 记号**（对模型是同一件事，
   //    见 `BACKGROUND_LEGEND`），但**台账必须分开给** —— "N 位人物已离场"是能改变读者
   //    判断的信息（否则他以为人物卡被压缩器吃了）。
   assert.match(r.text, /（\+1）/, '折叠要在提示词里留下记号（可解释）')
   assert.deepEqual(r.folded, [{ name: '人物', folded: 1 }], '折叠台账要如实给出来（读者侧不合并）')
-  const 状态段 = r.text.slice(r.text.indexOf('### 人物状态') + 1, r.text.indexOf('### 人物状态') + 400)
-  assert.ok(状态段.includes('在城中被围'), '⚠️ 状态段得**真在**，否则下面那条断言是假绿')
-  assert.ok(!状态段.includes('离开渡口，去向不明'), '离场人物的状态行不注入（过期现状误导）')
-  // 乙：90 − 90 = 0 < 60 ⇒ 正常展开
+  // ⭐ 折叠的**实质效果**：甲的状态行整条都不许出现（它还在文件里，只是不投喂）。
+  assert.doesNotMatch(r.text, /离开渡口，去向不明/, '离场人物的状态行不注入（过期现状误导）')
+  // 乙：90 − 90 = 0 < 60 ⇒ 正常展开：状态后缀照旧跟在人物行尾
+  assert.match(r.text, /- 乙：[^\n]*在城中被围/, '在线人物的状态后缀照旧在（折叠只碰离场的人）')
   assert.ok(r.text.includes('被围城中'), '在线人物的一切照旧')
 })
 
@@ -842,7 +851,10 @@ test('在线折叠：人物**再出场**（有新条目）⇒ 自动展开；文
     '- `第95章` 重新出现。',
   ].join('\n'))
   const r = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 96, personOfflineChapters: 60 })
-  assert.ok(r.text.includes('渡口少年'), 'lastSeen 更新 ⇒ 整卡展开')
+  // ⚠️ 2026-10-05（C）：人物在注入里是**一人一行**（只给最新一条）⇒ 「整卡展开」这个说法
+  //    已经不成立 ✓。要钉的**机制**是：`lastSeen` 更新 ⇒ 他**不参与折叠** ✓。
+  assert.deepEqual(r.folded, [], 'lastSeen 更新 ⇒ 不折叠（机制）')
+  assert.ok(r.text.includes('重新出现'), '最新一条在（C：人物只给最新一条）')
   assert.ok(r.text.includes('回来了，落脚在码头'), '状态行跟着回来')
   const 复述 = renderBackground(doc, '《书》')
   assert.match(复述, /渡口少年/, '文件视图不受折叠影响 —— 折叠只动注入')
@@ -851,7 +863,8 @@ test('在线折叠：人物**再出场**（有新条目）⇒ 自动展开；文
 test('在线折叠：设 0（或不给 progressIndex）⇒ 关闭；与旧行为逐字一致', () => {
   const doc = parseBackground(OFFLINE_DOC)
   const off = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 89, personOfflineChapters: 0 })
-  assert.ok(off.text.includes('渡口少年'), '0 = 不折叠')
+  // ⚠️ 2026-10-05（C）：同上 —— 钉**折叠台账**，不再钉「整卡内容在不在」。
+  assert.deepEqual(off.folded, [], '0 = 不折叠')
   assert.ok(!off.text.includes('已**离场**'), '折叠的说明也不该出现')
 })
 

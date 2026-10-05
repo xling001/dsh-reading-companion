@@ -101,21 +101,20 @@ test('别的主体的状态行不受影响；状态节天然在文件节序里�
   assert.deepEqual(BACKGROUND_SECTIONS.slice(0, 2), ['文本类型', BACKGROUND_STATE_SECTION])
 })
 
-test('注入：人物状态**整条在场**（排在整块的**最后**），且计入用量', () => {
+test('注入：人物状态**并进「人物」索引行**（C，不再单独成节），且计入用量', () => {
   const doc = parseBackground(md(
     ['### 甲', '- `第10章` 现状：在山腰养伤。'],
     ['## 人物关系', '- 甲 ↔ 乙：同门'],
   ))
   const { text, used } = renderBackgroundForPrompt(doc, { budgetChars: 9000 })
-  const atState = text.indexOf('### 人物状态')
-  assert.ok(atState >= 0, '人物状态必须进提示词')
-  assert.ok(text.includes('在山腰养伤'), '那行现状必须真的在')
-  // ⚠️ 2026-10-04 **位置反转**：它从前排在「文本类型」之后、注入节之前（整块的第 2 节），
-  //    现在排到**最后**。依据是 lorebook / World Info 的工程经验 ——"**越靠后的条目对
-  //    输出影响越大**"，而这一节是最"此刻相关"的（"这个人**现在**站在哪边"）。
-  //    ⚠️ **额度口径一个字没动**：它的长度照旧在算权重**之前**就从预算里扣掉（`used` 含它）。
-  assert.ok(atState > text.indexOf('### 人物关系'), '它现在排在注入节**之后**')
-  assert.ok(text.indexOf('### 文本类型') < atState, '排在元判断之后（元判断仍是第一节）')
+  // ⚠️ **2026-10-05（C）：这一节不再单独进提示词** ✗ —— 读者拍板把它**并进「人物」索引行**
+  //    （"人类读者不太需要这个条目，**这个是给 AI 看的**"）：`- 甲：<最新一条> · <此刻>`。
+  //    文件里那一节照旧保留（合并/取代/`stateSubjects` 都靠它），只是注入里不再单开一节。
+  //    ⚠️ 它**仍然计入用量**（额度口径一个字没动）—— 断言 `used > 0` 之外还要断言正文真在，
+  //    否则这条就是假绿（"状态没了但 used 还在"同样是坏）。
+  assert.doesNotMatch(text, /### 人物状态/, 'C 之后不再单独出这一节（内容并进人物行）')
+  assert.match(text, /- 甲：[^\n]*在山腰养伤/, '那行现状必须真的在（并进「人物」索引行的行尾）')
+  assert.ok(text.indexOf('### 文本类型') < text.indexOf('- 甲：'), '元判断仍是第一节')
   assert.ok(used > 0 && text.length > 0, '长度要计入')
   assert.ok(BACKGROUND_FULL_SECTIONS.includes(BACKGROUND_STATE_SECTION), '它属于"永远整条注入"族')
 })

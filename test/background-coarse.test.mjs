@@ -28,7 +28,9 @@ const md = (lines) => ['<!-- drc-background: schema=1 covered=1..60 -->', ...lin
 
 /** 造一个有 N 个主体、每个 M 条记载的分组节。 */
 const manySubjects = (count, perSubject) => {
-  const lines = ['## 人物']
+  // ⚠️ 2026-10-05（C）：**「人物」现在恒定压成索引行**（一人一行）⇒ 深度优先那条路
+  //    对它已不适用 ✓。夹具换成分组节里**仍走深度优先**的「世界观」（同样是分组节 ✓）。
+  const lines = ['## 世界观']
   for (let c = 0; c < count; c += 1) {
     lines.push(`### 甲${c}`)
     for (let i = 0; i < perSubject; i += 1) lines.push(`- \`第${i + 1}章\` 甲${c}的第${i + 1}条记载`)
@@ -92,4 +94,16 @@ test('深度优先：图例里必须有 `（未展开 N：…）` 这个记号�
   const out = renderBackgroundForPrompt(manySubjects(12, 4), { budgetChars: 900, progressIndex: 30 })
   assert.match(out.text, /`（未展开 N：…）`/, '记号的含义由顶部图例定义（唯一一处）')
   assert.match(out.text, /装不下的人，只给名字/, '图例要说清它是什么意思')
+})
+
+test('名录上限：装不下的人再多，名单也只列 40 个（超出的只报个数）', () => {
+  // 读者 2026-10-05 点名要的上限：这一行的长度取决于取舍结果、事前算不进额度，
+  // 不封顶就会随角色数一直长 ⇒ 无声顶破预算。
+  const out = renderBackgroundForPrompt(manySubjects(120, 4), { budgetChars: 900, progressIndex: 30 })
+  const aside = /（未展开 (\d+)：([^）]*)）/.exec(out.text)
+  assert.ok(aside !== null, '装不下的人要点名')
+  const listed = aside[2].replace(/ …另 \d+$/, '').split(' / ').filter((one) => one.trim() !== '')
+  assert.ok(listed.length <= 40, `名单最多 40 个，实际 ${listed.length} 个`)
+  assert.ok(Number(aside[1]) > 40, `这里应当有超过 40 个装不下的人，实际 ${aside[1]}`)
+  assert.match(aside[2], /…另 \d+/, '超出的部分要报个数')
 })

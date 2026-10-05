@@ -63,6 +63,9 @@ function section(over = {}) {
     backgroundText: w.backgroundText,
     backgroundCovered: w.backgroundCovered,
     persona: over.persona,
+    // ⚠️ 「想回忆前文时读这份文件」（2026-10-05）：**必须透传** —— 守卫第一版就是这么红的
+    //    （它测"给了路径 ⇒ 出现"，而助手没转发 ⇒ 永远不出现 ✗）。
+    backgroundPath: over.backgroundPath,
     discussions: over.discussions,
     lastDiscussionAt: over.lastDiscussionAt ?? null,
     now: over.now ?? '2026-01-01T00:00:00.000Z',
@@ -372,3 +375,20 @@ test('讨论时间线：进了段落，而且在动态区', () => {
 })
 
 //#endregion
+
+test('前文回忆（2026-10-05）：给了陪伴目录路径 ⇒ 提示词告诉 AI 去读它；拿不到 ⇒ 整段不出现', () => {
+  // 读者拍板：**不新造工具** —— 防剧透靠"文件本身只含已读章节"这条限制。
+  // ⚠️ 伏笔**刻意不过滤**（读者 2026-10-05：伏笔本来就是猜测，AI 读到也只知道
+  //    「这条线未闭合」；除非别处没防住让它读到后文，它才能"确定"那个猜测）。
+  const withPath = section({ backgroundPath: '/ws/陪读_某书/background.md' })
+  assert.match(withPath, /## 想回忆前文时/, '要告诉它去哪儿回忆')
+  assert.match(withPath, /\/ws\/陪读_某书\/background\.md/, '路径要**逐字**给出（否则它猜不到）')
+  assert.match(withPath, /只包含你已经读过的部分/, '要说清为什么不会剧透')
+  assert.match(withPath, /别猜/, '要明说"想不起来就读它、别猜"（防编造）')
+
+  // ⚠️ 拿不到路径（没绑定 / 不在工作区）⇒ **整段不说**：与其给一个读不到的路径让它撞墙，
+  //    不如不说（这也是这一段的默认态 —— 安全的空操作）。
+  const without = section({ backgroundPath: '' })
+  assert.doesNotMatch(without, /想回忆前文时/, '拿不到路径就整段不出现')
+  assert.doesNotMatch(without, /background\.md/, '连文件名都不该出现')
+})

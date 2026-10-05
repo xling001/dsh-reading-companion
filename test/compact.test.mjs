@@ -1704,3 +1704,36 @@ test('压缩的素材/成品必须是 `parseBackground` 能**原样读回**的�
 
 //#endregion
 
+
+test('自适应重试：**砍半胜出 ⇒ partial 必须为 true**（否则客户端会提前停循环）', async () => {
+  // ⚠️ 2026-10-05 真机 BUG（补 107 章）：第一批被砍半成 1-15，而 `partial` 拿**半截样本**算
+  //    ⇒ 算出 false ⇒ 客户端以为"补到底了" ⇒ **循环停** ✗（缺口还剩 16..107 再也没补）。
+  //    砍半只在 `halfTo < sample.to` 时发生 ⇒ 半截**必然**没补到这一批要的末尾 ⇒ 恒为 true ✓。
+  //    死循环由客户端另一条判据兜（水位线没推进就停），所以保守报 true 是安全的。
+  const calls = []
+  const fakeSubagents = {
+    start: async (kind, spec) => {
+      calls.push(spec.label)
+      const text = (calls.length === 1
+        ? '## 人物\n### 甲\n- `第1章` 出场'      // ✗ 无句读收尾 ⇒ 判为截断嫌疑
+        : '## 人物\n### 甲\n- `第1章` 出场。')    // ✓ 完整
+      return { result: Promise.resolve({ output: [{ type: 'text', text }] }), dispose: async () => {} }
+    },
+  }
+  const dir = makeDir('retry-half-partial')
+  const s = await startServer(dir, { subagents: fakeSubagents, agents: { get: () => ({ id: 'parent' }) } })
+  try {
+    const bookId = await importBook(s.base, dir)
+    await call(`${s.base}/books/${bookId}/binding`, { method: 'PUT', body: { sessionId: 'sess' } })
+    await call(`${s.base}/books/${bookId}/progress`, { method: 'PUT', body: { chapterIndex: 20, charOffset: 0 } })
+    const res = await call(`${s.base}/books/${bookId}/background/fill`, { method: 'POST', body: {} })
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    assert.equal(calls.length, 2, '截断嫌疑要触发一次重试')
+    assert.equal(res.body.retried?.ok, true, '重试胜出要如实报告')
+    assert.ok(res.body.sampled.last < 20, `上报区间要是**半截**（实际到第 ${res.body.sampled.last} 章）`)
+    assert.equal(res.body.partial, true, '⭐ 砍半胜出 ⇒ 缺口没补完 ⇒ 必须让客户端继续补')
+  } finally {
+    await s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

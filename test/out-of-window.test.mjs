@@ -128,9 +128,11 @@ test('名录化（G2）：⭐ **活跃主体照旧出 `### 甲` + 全部条目**
     progressIndex: 399,
     archiveWindowChapters: 120,
   })
-  assert.match(text, /### 乙/, '活跃主体照旧是 `###` 块')
-  assert.ok(text.includes('第390章'), '活跃主体第一条全文在')
-  assert.ok(text.includes('第395章'), '⭐ 活跃主体的**每一条**都在（不许被名录化吃掉）')
+  assert.match(text, /### 乙|- 乙：/, '活跃主体照旧在（形状见 C：人物是一行一人）')
+  // ⚠️ 2026-10-05（C）：人物是**一人一行**（只给最新一条）⇒ 不再「每一条都在」。
+  //    这条用例的**意图**（活跃主体不许被名录化吃掉 ✓）照旧成立 ⇒ 钉最新那条 + 不在名录里。
+  assert.ok(text.includes('第395章'), '活跃主体**最新一条**在（C：人物一行一人）')
+  assert.doesNotMatch(text, /第390章/, '更早的条目不随行（C：只给最新一条）')
   assert.doesNotMatch(text, /### 甲/, '出窗主体不再渲染成 `###` 块')
   assert.match(text, /（出窗 1：甲）/, '出窗主体进名录（记号与顶部图例逐字对应）')
 })
@@ -378,7 +380,9 @@ test('A 版判据：提示词给了「三问 + 复现门槛 + 默认归属」与
   assert.match(prompt, /会不会再次被用到/, '第一问：复现')
   assert.match(prompt, /至少两个不同章号/, '复现要**可数**（≥2 个章号锚，不看后面 ⇒ 不引入剧透）')
   assert.match(prompt, /默认归属/, '要说清"一个事实的默认家是它关于的那个人"')
-  assert.match(prompt, /同一对人只留一条/, '一对人一条')
+  // ⚠️ 2026-10-05 晚：**同一对、同一方向**只留一条 ✓；**双向分开两个视角** ✓。
+  assert.match(prompt, /同一对、同一方向只留一条/, '同方向一条')
+  assert.match(prompt, /双向关系两个视角各一条/, '双向两个视角各一条')
   assert.match(prompt, /不要另起一条/, '…并且明说别另起')
 })
 
