@@ -47,8 +47,6 @@
     "docs/design.md",
     "docs/publishing.md",
     "docs/background-format.md",
-    "docs/design-history.md",
-    "docs/design-v1-archive.md",
     "docs/manual-testing.md",
     "docs/images",
     "scripts/reindex-books.mjs",
