@@ -142,8 +142,8 @@ test('兜底：**空的兜底节不改变任何分配**（差分断言）', () =
   assert.ok(a.omitted.length > 0 || a.trimmed.length > 0, '夹具的预算必须真的不够，否则差分没有意义')
 })
 
-test('兜底：内容再多也不会被饿死，且是六节里最少的一份', () => {
-  // 兜底排在最后、权重最低，于是它是最容易被整节丢掉的那一节。**保底与权重
+test('兜底：内容再多也不会被饿死（保底与权重无关）', () => {
+  // 兜底权重最低，于是它是最容易被整节丢掉的那一节。**保底与权重
   // 无关**（见 `SECTION_FLOOR_RATIO`），所以它必须仍然露头——否则非小说文本
   // 会遇到"所有概念都不进提示词"，而那正是这一节存在的理由。
   const entries = (label) => Array.from({ length: 20 }, (_, i) => `- \`第${i + 1}章\` ${label}${i}`)
@@ -152,7 +152,9 @@ test('兜底：内容再多也不会被饿死，且是六节里最少的一份',
     '## 人物', ...entries('人物'), '',
     '## 世界观', ...entries('设定'), '',
     '## 文风', ...entries('风格'), '',
-    '## 前文脉络', ...entries('脉络'), '',
+    // ⚠️ 2026-10-06（B1-B）：「时间与分线」进了注入族 ⇒ 夹具要给它内容，
+    //    否则"每节都要露头"会对一个空分区要额度（它本来就不该有额度）✗。
+    '## 时间与分线', '### 主线', ...entries('脉络'), '',
     '## 通用概念', ...entries('概念'),
   ].join('\n'))
 
@@ -164,11 +166,10 @@ test('兜底：内容再多也不会被饿死，且是六节里最少的一份',
   for (const { name, value } of values) {
     assert.ok(value > 0, `「${name}」没有拿到额度`)
   }
-  for (let i = 1; i < values.length; i += 1) {
-    assert.ok(
-      values[i - 1].value > values[i].value,
-      `额度必须严格随权重递减：「${values[i - 1].name}」${values[i - 1].value} vs 「${values[i].name}」${values[i].value}`,
-    )
+  // ⚠️ **2026-10-06（C）不再要求"额度严格随权重递减"**（分区顺序只是平手兜底，见
+  //    `allocateSections`）⇒ 改钉"每节都 ≥ 保底"（整节消失才是要防的那件事）。
+  for (const { name, value } of values) {
+    assert.ok(value >= 900 * 0.12 - 1, `「${name}」的额度 ${value} 低于保底（整节会消失）`)
   }
   assert.ok(BACKGROUND_SECTION_WEIGHTS[FALLBACK] > 0, '兜底的权重不能是 0（那等于永远拿不到额度）')
 })
@@ -196,7 +197,14 @@ test('兜底：能存能渲染，且往返等价', () => {
 
 test('兜底：是**分组**分区（能按主体寻址），与世界观同形', () => {
   assert.ok(BACKGROUND_GROUPED_SECTIONS.includes(FALLBACK))
-  assert.equal(BACKGROUND_INJECTED_SECTIONS[BACKGROUND_INJECTED_SECTIONS.length - 1], FALLBACK, '兜底必须排在最后')
+  // ⚠️ 2026-10-06（B1-B）：「时间与分线」进了注入族且权重最低（3/51 < 兜底 5/51）
+  //    ⇒ **排在最后的是它**。这条断言从前写着"兜底必须排在最后"——那条性质是
+  //    "表内顺序 = 权重降序"的一个**结果**，不是原因；现在换个数最少的即可。
+  assert.equal(
+    BACKGROUND_INJECTED_SECTIONS[BACKGROUND_INJECTED_SECTIONS.length - 1],
+    FALLBACK,
+    '排最后的是权重最低的那一节（B1-B 之后是「时间与分线」）',
+  )
 })
 
 test('兜底：取代在它下面同样生效（旧概念搬进归档，不再进提示词）', () => {

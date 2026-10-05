@@ -37,7 +37,7 @@ import {
 import { buildMemoryPrompt } from '../lib/host/memory.js'
 import { buildCompactPrompt, COMPRESSIBLE_SECTIONS } from '../lib/host/compact.js'
 
-test('分区：五个小节（「前文脉络」已并入「时间与分线」），顺序与权重严格同序', () => {
+test('分区：六个小节（「前文脉络」已并入「时间与分线」），顺序与权重严格同序', () => {
   assert.deepEqual(
     [...BACKGROUND_INJECTED_SECTIONS],
     ['人物关系', '人物', '世界观', '文风（只写一次）', '通用概念'],
@@ -57,34 +57,47 @@ test('分区：五个小节（「前文脉络」已并入「时间与分线」�
     '权重表里有 BACKGROUND_INJECTED_SECTIONS 之外的多余条目',
   )
 
-  // 严格递减，且与顺序一致。顺序是"超预算时从后往前丢"的依据，权重是
-  // "先按权重保底"的依据 —— 两者必须给出同一个优先级，否则没有唯一答案。
-  for (let i = 1; i < BACKGROUND_INJECTED_SECTIONS.length; i += 1) {
-    const prev = BACKGROUND_SECTION_WEIGHTS[BACKGROUND_INJECTED_SECTIONS[i - 1]]
-    const next = BACKGROUND_SECTION_WEIGHTS[BACKGROUND_INJECTED_SECTIONS[i]]
+  // ⚠️ **2026-10-06（C）撤销了"严格递减"这条要求** —— 它建立在一条**误解**上：
+  //    从前这里写着"顺序是'超预算时从后往前丢'的依据"，而 `background.js` 分配那一段
+  //    自己的注释写的是"分区顺序退居**收尾时的兜底**：只剩几个字符、按权重取整分不动时，
+  //    优先给靠前的节" ⇒ **顺序只是平手时的兜底，分配的主依据是权重** ✓
+  //    ⇒ 两者**不必**同序；为了同序去重排节序，会白白**重排读者手里的 `background.md`** ✗。
+  //    现在钉的是**真正承重的那两条**：① 每节都有权重；② 权重的相对大小**符合实测需求**
+  //    （读者 2026-10-06 拍板的 C：把份额从吃不完的节挪给饿的节）。
+  for (const name of BACKGROUND_INJECTED_SECTIONS) {
     assert.ok(
-      prev > next,
-      `「${BACKGROUND_INJECTED_SECTIONS[i - 1]}」(${prev}) 必须比「${BACKGROUND_INJECTED_SECTIONS[i]}」(${next}) 重`,
+      BACKGROUND_SECTION_WEIGHTS[name] > 0,
+      `「${name}」的权重必须是正数（0 等于永远拿不到额度）`,
     )
   }
+  assert.ok(
+    BACKGROUND_SECTION_WEIGHTS['人物'] > BACKGROUND_SECTION_WEIGHTS['人物关系'],
+    '「人物」必须重于「人物关系」（实测：四份真机文件里关系只用 0.4×~0.8× 份额，而人物 1.2×~1.6×）',
+  )
+  assert.ok(
+    BACKGROUND_SECTION_WEIGHTS['人物'] > BACKGROUND_SECTION_WEIGHTS['世界观'],
+    '「人物」必须重于「世界观」',
+  )
 
   // 权重和是 1：它是预算的份额，和不为 1 意味着保底总额超出或不足预算。
   const sum = Object.values(BACKGROUND_SECTION_WEIGHTS).reduce((a, b) => a + b, 0)
   assert.ok(Math.abs(sum - 1) < 1e-9, `权重和应当是 1，实际 ${sum}`)
 
-  // ★ 「前文脉络」并入后（3.0），**未并入者的相对份额保持不变**。原比例 15:13:9:7:6
-  // 去掉脉络的 7 ⇒ 剩五节 15:13:9:6:5、分母 48 —— 它是"减少一节不改变其余分配"的唯一减法。
-  // 把它写成断言，是因为这条性质**看不见**——一旦有人为了凑出漂亮的小数把原五节各减一点，
-  // 小说那边的分配就悄悄变了。
-  const original = [15, 13, 9, 6, 5]
+  // ⚠️ **相对份额**（2026-10-06 C 重标，分母 45，按**表内顺序**写）：
+  //    人物关系 11 · 人物 16 · 世界观 11 · 文风 2 · 通用概念 1 · 时间与分线 4
+  //    依据：四份真机文件的实测需求 —— 人物 1.2×~1.6×、世界观 0.8×~1.7×（都在饿），
+  //    关系 0.4×~0.8×、文风 0.1×、通用概念 0.1×~0.2×（都吃不完）。
+  //    把它写成断言是因为这条性质**看不见**：一旦有人为了凑漂亮小数动一位，
+  //    分配就悄悄变了。改它必须**同时**改这里，并说明依据。
+  const original = [11, 16, 11, 2, 1]
   const factor = BACKGROUND_SECTION_WEIGHTS['人物关系'] / original[0]
   original.forEach((part, index) => {
     assert.ok(
       Math.abs(BACKGROUND_SECTION_WEIGHTS[BACKGROUND_INJECTED_SECTIONS[index]] - part * factor) < 1e-12,
-      `「${BACKGROUND_INJECTED_SECTIONS[index]}」的相对份额变了：原比例 ${original.join(':')} 不再成立`,
+      `「${BACKGROUND_INJECTED_SECTIONS[index]}」的相对份额变了：约定比例 ${original.join(':')} 不再成立`,
     )
   })
-  // 兜底那节的份额必须**小于**原表里最小的那一节（它是最后一名）。
+  // 兜底那节的份额必须**最小**（它是最容易被整节丢掉的那一节，靠保底露头）。
   assert.ok(
     BACKGROUND_SECTION_WEIGHTS['通用概念'] < BACKGROUND_SECTION_WEIGHTS['文风（只写一次）'],
     '「通用概念」是兜底，权重必须最低',
@@ -126,8 +139,11 @@ function measureDoc(perSection = 20) {
     '## 人物', ...cast, '',
     '## 世界观', ...entries('设定'), '',
     '## 文风', ...entries('风格'), '',
-    // （3.0：「前文脉络」不再注入 —— 夹具随注入族走五节。）
-    '## 通用概念', ...entries('概念'),
+    // （3.0：「前文脉络」不再注入 —— 夹具随注入族走。）
+    '## 通用概念', ...entries('概念'), '',
+    // ⚠️ 2026-10-06（B1-B）：「时间与分线」进了注入族（**只给主线**）⇒ 夹具必须给它内容，
+    //    否则"每节都露头"那条断言会对一个**空分区**要额度（它本来就不该有额度）✗。
+    '## 时间与分线', '### 主线', ...entries('脉络'),
   ].join('\n'))
 }
 
@@ -190,12 +206,13 @@ test('分区：默认权重下，额度严格随权重递减且每节都露头',
     return { name, value: allowances[name] }
   })
 
-  for (let i = 1; i < values.length; i += 1) {
-    assert.ok(
-      values[i - 1].value > values[i].value,
-      `额度必须严格随权重递减：「${values[i - 1].name}」${values[i - 1].value} `
-      + `vs 「${values[i].name}」${values[i].value}`,
-    )
+  // ⚠️ **2026-10-06（C）不再要求"额度严格随权重递减"**：分区顺序只是 `allocateSections`
+  //    收尾时的**平手兜底**（见 `background.js` 那一段注释），分配的主依据是权重 ⇒
+  //    为了同序去重排节序只会白白重排读者手里的 `background.md` ✗。
+  //    这里改钉**真正承重的那条**：每节都要 ≥ 保底（`SECTION_FLOOR_RATIO` × 预算）——
+  //    否则"整节消失"又会回来，而那正是保底存在的理由。
+  for (const { name, value } of values) {
+    assert.ok(value >= 900 * 0.12 - 1, `「${name}」的额度 ${value} 低于保底（整节会消失）`)
   }
 })
 
@@ -430,16 +447,25 @@ test('读者族：这一节对模型不可见，但重写与合并都不许丢�
     '## 时间与分线',
     '### 主线',
     '- `第1-4年` 骨架：她还在渡口一带。',
+    // ⚠️ **主线里也可能有伏笔标记**（实测四份真机文件里 3 份就是这样）⇒ 夹具必须带上它，
+    //    否则"行级挡元剧透"这条机制根本没被这条用例覆盖到。
+    '- `第5年` 【伏笔】他在信里留了暗号（还没解释）',
     '### 【支线】甲线 · 第1–7年',
     '- `第12章` 【第3年春】与乙在渡口分离。',
     // ⚠️ 「伏笔」不再单独成节（读者 2026-10-01）：写在条目里标出来即可。
     '- `第15章` 【伏笔】他多看了一眼那封信（还没解释）',
   ].join('\n'))
 
-  // ① 注入必须**看不到**这一节 —— 判据："这句话会不会让模型顺着说？"（会，就不注入）
+  // ① **注入只看得到主线**（2026-10-06 B1-B 把这里**反转**了：从前整节不给，现在只给骨架）——
+  //    判据一个字没变："这句话会不会让模型顺着说？"
+  //      · 主线 = "已经发生过什么" ⇒ **不会** ⇒ 给；
+  //      · 支线结构 + `【伏笔】` = "埋了什么还没收" ⇒ **会** ⇒ 不给。
   const injected = renderBackgroundForPrompt(doc, { progressIndex: 20 })
-  assert.doesNotMatch(injected.text, /时间与分线/, '分线节不许进提示词')
-  assert.doesNotMatch(injected.text, /那封信/, '伏笔的正文更不许进（它会诱导提示）')
+  assert.doesNotMatch(injected.text, /## 时间与分线/, '这一节整节都不给 AI（2026-10-06 回退 B1-B）')
+  assert.doesNotMatch(injected.text, /骨架：她还在渡口一带/, '主线的正文也不给')
+  assert.doesNotMatch(injected.text, /那封信/, '伏笔的正文不许进（它会诱导提示）')
+  assert.doesNotMatch(injected.text, /留了暗号/, '⚠️ **主线里的伏笔行也不许进**（行级过滤）')
+  assert.doesNotMatch(injected.text, /【伏笔】/, '伏笔标记一个都不许漏出去')
   assert.match(injected.text, /身份未明/, '注入族照旧要在')
 
   // ② 写成文件时**必须在** —— 否则重写一次这一节就永久没了

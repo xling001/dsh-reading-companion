@@ -1,169 +1,95 @@
 /**
- * T3：背景认识的**分层降级**（粗粒度那一级）。
+ * **注入侧的取舍策略**（2026-10-06 起：**深度优先**）。
  *
- * ## 这一级在解决什么
+ * ## 为什么改了
  *
- * docs/design-v1-archive.md §197 把背景认识的两个轴说清了：轴 1 是**深度**（一章抽到多少正文），轴 2 是
- * **合并比**（多少章的条目挤得进 `backgroundBudgetChars`）。两者反向，而 T3 的
- * 结构性出路不是"加预算"，是**让同一份预算装下更多主体**。
+ * 从前分组节走的是"**广度优先**"：额度不够时先做**粗化**（主体只留最新一条），再做
+ * **置换**（丢最旧的完整单元，换更多主体的锚）—— 设计原话是"一个主体被整块丢掉意味着
+ * AI 不知道他存在，比降级严重得多"。
  *
- * 做法是在既有的降级阶梯**中间插一级**。旧阶梯是：按权重分额度 → 装不下就按
- * "近期优先"丢单元。新阶梯多一层：装不下的单元先降为**粗粒度**（`### 主体` +
- * 它名下章号最晚的那一条），粗粒度也装不下才丢。
+ * 实测（四份真机文件）它**两头都亏**：
+ *   · 细节亏：为多露几个名字，把大卡也降级成一行 ⇒ 《一世之尊》**26/35** 张卡只剩一行 ✗；
+ *   · 预算亏：全压成一行之后，一节的"可渲染上限"塌到 `主体数 × 40 字` ⇒ **13% 预算闲置** ✗。
  *
- * ## 为什么这一级可以默认开
+ * 读者 2026-10-06 拍板：**"可以取舍牺牲小配角"** ⇒ 改成：
+ *   · 保住的人（近期优先）给**全文**；
+ *   · 装不下的人**只进名录**（`（未展开 N：甲 / 乙 …）`，一行 3 字一个）——
+ *     **照样让 AI 知道他们存在** ✓，但不再用"每人一条粗化记载"去换 ✓。
  *
- * 因为它是**纯补位**，这是本节全部断言围绕的性质：
- *   - `kept` 的算法一个字符都没改，粗粒度只在**本来会被丢掉**的单元里补位；
- *   - 于是预算充足时（没有单元被跳过）**输出逐字节不变**；
- *   - 预算紧张时，每个原本会显示的单元仍然原样显示，只是**多**了一批原本会
- *     消失的主体。集合意义上是严格单调的：`新 ⊇ 旧`。
- *
- * 所以这里钉四件事：**充足时逐字节相同**、**紧张时严格补位（单调）**、
- * **粗粒度只留最新一条且不说谎**、**一行条目不会被"假降级"**。
+ * ⚠️ 于是 `selectUnits` 的粗化/置换那一级**对分组节不再生效**（`coarseDegrade: false`）。
+ *    代码留着（它对扁平节本来也无效、且是一条独立的降级路径），但**不要再为它写守卫**。
  */
-
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { parseBackground, renderBackgroundForPrompt } from '../lib/host/background.js'
 
-/** 一批"每个主体名下都有好几条记载"的背景认识。 */
-function fatDoc({ characters = 6, linesEach = 4 } = {}) {
-  const out = ['<!-- drc-background: schema=1 covered=1..60 -->', '## 人物']
-  for (let c = 1; c <= characters; c += 1) {
-    out.push(`### 角色${c}`)
-    for (let l = 1; l <= linesEach; l += 1) {
-      out.push(`- \`第${l}章\` 角色${c}的第${l}条记载${'细'.repeat(8)}`)
-    }
+const md = (lines) => ['<!-- drc-background: schema=1 covered=1..60 -->', ...lines].join('\n')
+
+/** 造一个有 N 个主体、每个 M 条记载的分组节。 */
+const manySubjects = (count, perSubject) => {
+  const lines = ['## 人物']
+  for (let c = 0; c < count; c += 1) {
+    lines.push(`### 甲${c}`)
+    for (let i = 0; i < perSubject; i += 1) lines.push(`- \`第${i + 1}章\` 甲${c}的第${i + 1}条记载`)
   }
-  return parseBackground(out.join('\n'))
+  return parseBackground(md(lines))
 }
 
-/** 输出里出现过的主体名（`### 名字`）。 */
-const subjectsIn = (text) => [...text.matchAll(/^### (.+)$/gm)].map((m) => m[1])
-
-// ------------------------------------------------------------------ 充足时不变
-
-test('分层：预算充足时**逐字节相同**——这一级不参与，就等于没有它', () => {
-  const doc = fatDoc()
-  const on = renderBackgroundForPrompt(doc, { budgetChars: 6000, progressIndex: 60 })
-  const off = renderBackgroundForPrompt(doc, { budgetChars: 6000, progressIndex: 60, coarseDegrade: false })
-
-  assert.equal(on.text, off.text, '预算充足时开与关必须一个字节都不差')
-  assert.deepEqual(on.coarsened, [], '没有单元被跳过，就不该有单元被粗化')
-  assert.deepEqual(on.trimmed, [], '也不该有单元被丢弃')
-  assert.equal(on.text.includes('只列出最近一条记载'), false, '不该出现粗粒度说明')
-})
-
-// ------------------------------------------------------------------ 紧张时补位
-
-test('分层：预算紧张时严格补位——原本会显示的一个不动，只是**多**了一批主体', () => {
-  const doc = fatDoc()
-  const budgetChars = 700
-  const off = renderBackgroundForPrompt(doc, { budgetChars, progressIndex: 60, coarseDegrade: false })
-  const on = renderBackgroundForPrompt(doc, { budgetChars, progressIndex: 60 })
-
-  // 先把前提钉住：这个预算真的紧张到会丢单元，否则下面全是平凡的真话。
-  assert.ok(off.trimmed.length > 0, '这个预算必须真的触发丢弃，否则这条用例没有信息量')
-  assert.ok(on.coarsened.length > 0, '开了分层就必须真的有主体被粗化')
-
-  const before = subjectsIn(off.text)
-  const after = subjectsIn(on.text)
-  assert.ok(before.length > 0)
-
-  // ★ 单调性：原来显示的主体**一个都不能少**。
-  for (const name of before) {
-    assert.ok(after.includes(name), `原本显示的主体「${name}」在开了分层之后消失了`)
+test('深度优先：额度够时，**每个主体都给全文**（不粗化）', () => {
+  const out = renderBackgroundForPrompt(manySubjects(3, 4), { budgetChars: 9000, progressIndex: 30 })
+  assert.deepEqual(out.coarsened, [], '预算充足时不该有任何主体被粗化')
+  for (const c of [0, 1, 2]) {
+    assert.match(out.text, new RegExp(`### 甲${c}`), `甲${c} 应当有 \`###\` 块`)
+    assert.match(out.text, new RegExp(`甲${c}的第4条记载`), '最新一条在')
+    assert.match(out.text, new RegExp(`甲${c}的第1条记载`), '⭐ **最早一条也在**（深度优先：给了全文就给全）')
   }
-  // ★ 而且真的多了。
-  assert.ok(after.length > before.length, `主体数应当变多：${before.length} → ${after.length}`)
-
-  // ★ 顺序必须与 `background.md` 一致（角色1 → 角色N）。粗粒度单元与完整单元混排
-  //   时最容易写成"粗的全塞前面"——那样模型看到的次序就与文件对不上，排查时会
-  //   怀疑人生。（这一条是被一次变异逼出来的：M9 把所有粗粒度单元插到最前面，
-  //   当时没有任何断言看得见。）
-  const order = after.map((name) => Number(name.replace('角色', '')))
-  assert.deepEqual(order, [...order].sort((a, b) => a - b), `主体顺序被打乱：${after.join('、')}`)
-
-  // 丢掉的单元数必须相应减少——这是"补位"而不是"换一批"。
-  const droppedOff = off.trimmed.reduce((sum, t) => sum + t.dropped, 0)
-  const droppedOn = on.trimmed.reduce((sum, t) => sum + t.dropped, 0)
-  assert.ok(droppedOn < droppedOff, `被丢弃的单元数应当下降：${droppedOff} → ${droppedOn}`)
 })
 
-test('分层：粗粒度留的是**章号最晚**的那一条，而且明说自己是压缩过的', () => {
-  const doc = fatDoc({ characters: 1, linesEach: 4 })
-  // 预算小到只装得下 `### 角色1` + 一条记载。
-  // ⚠️ 2026-10-06 起注入头部多了一段**固定图例**（约 140 字，见 `BACKGROUND_LEGEND`），
-  //    而它**计入额度** ⇒ 探边界值的用例要把它算进去（这里的数字从 120 抬到 270）。
-  const out = renderBackgroundForPrompt(doc, { budgetChars: 270, progressIndex: 60 })
-  const coarsened = out.coarsened.find((entry) => entry.name === '人物')
-  assert.ok(coarsened !== undefined, `人物这一节应当出现粗粒度：${JSON.stringify(out.coarsened)}`)
+test('深度优先：额度紧张时，**保住的人给全文、装不下的只给名字**', () => {
+  const out = renderBackgroundForPrompt(manySubjects(12, 4), { budgetChars: 900, progressIndex: 30 })
 
-  // 最新的一条在，更早的不在。
-  assert.match(out.text, /第4章` 角色1的第4条记载/)
-  assert.doesNotMatch(out.text, /第1章` 角色1的第1条记载/)
+  // ① 保住的人：**全文**（不是"只剩最新一条"）
+  const keptHeadings = [...out.text.matchAll(/^### 甲\d+$/gm)].map((m) => m[0])
+  assert.ok(keptHeadings.length > 0, '预算 900 时应当至少留下一个主体')
+  for (const heading of keptHeadings) {
+    const name = heading.replace('### ', '')
+    const at = out.text.indexOf(heading)
+    const next = out.text.indexOf('\n### ', at + 1)
+    const block = next === -1 ? out.text.slice(at) : out.text.slice(at, next)
+    assert.match(block, /第1条记载/, `⭐ 「${name}」被保住 ⇒ 要给**全文**（含最早那条），不许只剩最新一条`)
+  }
 
-  // ⚠️ 记号是**承重的**：一个只带一条记载的 `### 角色1` 会被模型读成"角色1
-  // 只做过这一件事"。不说清，粗粒度就从"少给一点"变成"给错的信息"。
-  // ⚠️ 2026-10-06 起**一处图例 + 极短记号**（`（+N）`），不再每节一句长说明。
-  assert.match(out.text, /（\+\d+）/)
-  assert.match(out.text, /本节有 N 处更早的记载没投喂/, '记号的含义由顶部图例定义（唯一一处）')
+  // ② 装不下的人：**点名**（不是整块消失）
+  const aside = /（未展开 (\d+)：([^）]*)）/.exec(out.text)
+  assert.ok(aside !== null, `装不下的人要点名，实际：${out.text.slice(0, 300)}`)
+  assert.ok(Number(aside[1]) > 0, '点名的人数要是正数')
+  assert.match(aside[2], /甲\d+/, '名单里要有主体名')
+  assert.equal(
+    keptHeadings.length + Number(aside[1]), 12,
+    '保住的人 + 点名的人 = 全部主体（一个都不许无声消失）',
+  )
 })
 
-test('分层：只有一个主体、且额度连它都装不下时，说明句不出现（没有粗化就别声称粗化）', () => {
-  const doc = parseBackground(['## 人物', '### 甲', '- `第1章` 唯一一条'].join('\n'))
-  const out = renderBackgroundForPrompt(doc, { budgetChars: 40, progressIndex: 60 })
-  // 它只有一行，粗化省不下任何东西 → 要么原样显示、要么整节丢弃，不存在"半显示"。
-  assert.deepEqual(out.coarsened, [], '一行条目不该被当成"粗化了"')
+test('深度优先：分组节**不再出现"粗化"台账**（那一级对分组节已关闭）', () => {
+  const out = renderBackgroundForPrompt(manySubjects(12, 4), { budgetChars: 900, progressIndex: 30 })
+  assert.deepEqual(
+    out.coarsened.filter((item) => item.name === '人物'), [],
+    '分组节不许再走"每人只留最新一条"那条路 —— 它既砍细节又让额度花不完',
+  )
 })
 
-test('分层：散条目（本来就只有一行）不会被"假降级"占位', () => {
-  const doc = parseBackground([
-    '## 文风',
-    '- 叙述视角偏冷（`第1章`）',
-    '- 句子短促，少用形容词（`第2章`）',
-    '## 前文脉络',
-    '- `第1-3章` 初遇',
-  ].join('\n'))
-
-  const off = renderBackgroundForPrompt(doc, { budgetChars: 200, progressIndex: 60, coarseDegrade: false })
-  const on = renderBackgroundForPrompt(doc, { budgetChars: 200, progressIndex: 60 })
-
-  // 一行条目没有"粗粒度形态"可言，所以这一级对它们必须**完全没有影响**。
-  assert.deepEqual(on.coarsened, [])
-  assert.equal(on.text, off.text)
+test('深度优先：额度要**真的花掉**（不再出现"饿着 + 留着"）', () => {
+  const out = renderBackgroundForPrompt(manySubjects(12, 4), { budgetChars: 900, progressIndex: 30 })
+  // 从前这条会掉到 ~60%：全压成一行之后一节的"可渲染上限"塌了，预算花不出去。
+  assert.ok(
+    out.used >= 900 * 0.8,
+    `预算 900 时应当花掉 ≥80%（深度优先之后内容更贵），实际 ${out.used}`,
+  )
 })
 
-test('分层：记号里的数量与实际被粗化的主体数一致（别写一句对不上的话）', () => {
-  const doc = fatDoc({ characters: 8, linesEach: 4 })
-  // ⚠️ 图例（约 140 字）计入额度 ⇒ 边界值从 700 抬到 850（见 `BACKGROUND_LEGEND`）。
-  const out = renderBackgroundForPrompt(doc, { budgetChars: 850, progressIndex: 60 })
-  const claimed = out.coarsened.reduce((sum, entry) => sum + entry.coarsened, 0)
-  assert.ok(claimed > 0, '这个预算必须真的粗化出主体，否则这条用例没有信息量')
-  const matched = /（\+(\d+)）/.exec(out.text)
-  assert.ok(matched !== null, `应当出现记号：${out.text.slice(0, 200)}`)
-  assert.equal(Number(matched[1]), claimed, '记号里的数字必须与实际一致')
-})
-
-test('分层（3.0 ③c）：置换 —— 丢最旧的完整单元换被丢主体的锚，"整块消失"清零', () => {
-  // 这一条的**决策在 3.0 反转了**：v1.25 曾刻意不做置换（"丢一个完整单元换三个粗粒度
-  // 单元"能多表示 2 个主体，但会破坏"kept 一个都不动"）；3.0 之后锚有了语义（人物状态 /
-  // 在线折叠都拿它当"认识的骨架"），主体被**整块丢掉**的代价（AI 不知道他存在）比降级高
-  // ⇒ 反转为：**只在交换严格更优（多救回主体）时置换**，且救不回就不动。
-  const doc = fatDoc({ characters: 8, linesEach: 4 })
-  const tight = renderBackgroundForPrompt(doc, { budgetChars: 650, progressIndex: 60 })
-  const roomy = renderBackgroundForPrompt(doc, { budgetChars: 850, progressIndex: 60 })
-
-  assert.ok(tight.coarsened.length > 0, '预算 650：旧设计一个都不粗化；3.0 用置换把被丢主体救成锚')
-  // ⚠️ 置换的验收口径：**dropped 清零**（每个主体至少露一个锚），记号的数量一致。
-  assert.equal(tight.trimmed.length, 0, '不该再有"整块被丢"的记录 —— 都降成锚了')
-  const claimed = tight.coarsened.reduce((sum, entry) => sum + entry.coarsened, 0)
-  const matched = /（\+(\d+)）/.exec(tight.text)
-  assert.ok(matched !== null, `应当出现记号：${tight.text.slice(0, 200)}`)
-  assert.equal(Number(matched[1]), claimed, '记号里的数字必须与实际一致')
-
-  // 空间够时照旧整段展开（旧性质不回退）。
-  assert.ok(roomy.coarsened.length > 0, '空间够时它才补位')
+test('深度优先：图例里必须有 `（未展开 N：…）` 这个记号（否则模型看不懂那一行）', () => {
+  const out = renderBackgroundForPrompt(manySubjects(12, 4), { budgetChars: 900, progressIndex: 30 })
+  assert.match(out.text, /`（未展开 N：…）`/, '记号的含义由顶部图例定义（唯一一处）')
+  assert.match(out.text, /装不下的人，只给名字/, '图例要说清它是什么意思')
 })
