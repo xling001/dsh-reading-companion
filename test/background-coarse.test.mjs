@@ -95,7 +95,9 @@ test('分层：预算紧张时严格补位——原本会显示的一个不动�
 test('分层：粗粒度留的是**章号最晚**的那一条，而且明说自己是压缩过的', () => {
   const doc = fatDoc({ characters: 1, linesEach: 4 })
   // 预算小到只装得下 `### 角色1` + 一条记载。
-  const out = renderBackgroundForPrompt(doc, { budgetChars: 120, progressIndex: 60 })
+  // ⚠️ 2026-10-06 起注入头部多了一段**固定图例**（约 140 字，见 `BACKGROUND_LEGEND`），
+  //    而它**计入额度** ⇒ 探边界值的用例要把它算进去（这里的数字从 120 抬到 270）。
+  const out = renderBackgroundForPrompt(doc, { budgetChars: 270, progressIndex: 60 })
   const coarsened = out.coarsened.find((entry) => entry.name === '人物')
   assert.ok(coarsened !== undefined, `人物这一节应当出现粗粒度：${JSON.stringify(out.coarsened)}`)
 
@@ -103,10 +105,11 @@ test('分层：粗粒度留的是**章号最晚**的那一条，而且明说自�
   assert.match(out.text, /第4章` 角色1的第4条记载/)
   assert.doesNotMatch(out.text, /第1章` 角色1的第1条记载/)
 
-  // ⚠️ 说明句是**承重的**：一个只带一条记载的 `### 角色1` 会被模型读成"角色1
+  // ⚠️ 记号是**承重的**：一个只带一条记载的 `### 角色1` 会被模型读成"角色1
   // 只做过这一件事"。不说清，粗粒度就从"少给一点"变成"给错的信息"。
-  assert.match(out.text, /只列出最近一条记载/)
-  assert.match(out.text, /完整内容在 background\.md 里/)
+  // ⚠️ 2026-10-06 起**一处图例 + 极短记号**（`（+N）`），不再每节一句长说明。
+  assert.match(out.text, /（\+\d+）/)
+  assert.match(out.text, /本节有 N 处更早的记载没投喂/, '记号的含义由顶部图例定义（唯一一处）')
 })
 
 test('分层：只有一个主体、且额度连它都装不下时，说明句不出现（没有粗化就别声称粗化）', () => {
@@ -133,14 +136,15 @@ test('分层：散条目（本来就只有一行）不会被"假降级"占位', 
   assert.equal(on.text, off.text)
 })
 
-test('分层：说明句里的数量与实际被粗化的主体数一致（别写一句对不上的话）', () => {
+test('分层：记号里的数量与实际被粗化的主体数一致（别写一句对不上的话）', () => {
   const doc = fatDoc({ characters: 8, linesEach: 4 })
-  const out = renderBackgroundForPrompt(doc, { budgetChars: 700, progressIndex: 60 })
+  // ⚠️ 图例（约 140 字）计入额度 ⇒ 边界值从 700 抬到 850（见 `BACKGROUND_LEGEND`）。
+  const out = renderBackgroundForPrompt(doc, { budgetChars: 850, progressIndex: 60 })
   const claimed = out.coarsened.reduce((sum, entry) => sum + entry.coarsened, 0)
   assert.ok(claimed > 0, '这个预算必须真的粗化出主体，否则这条用例没有信息量')
-  const matched = /本节有 (\d+) 个主体只列出最近一条记载/.exec(out.text)
-  assert.ok(matched !== null, `应当出现说明句：${out.text.slice(0, 200)}`)
-  assert.equal(Number(matched[1]), claimed, '说明句里的数字必须与实际一致')
+  const matched = /（\+(\d+)）/.exec(out.text)
+  assert.ok(matched !== null, `应当出现记号：${out.text.slice(0, 200)}`)
+  assert.equal(Number(matched[1]), claimed, '记号里的数字必须与实际一致')
 })
 
 test('分层（3.0 ③c）：置换 —— 丢最旧的完整单元换被丢主体的锚，"整块消失"清零', () => {
@@ -149,16 +153,16 @@ test('分层（3.0 ③c）：置换 —— 丢最旧的完整单元换被丢主�
   // 在线折叠都拿它当"认识的骨架"），主体被**整块丢掉**的代价（AI 不知道他存在）比降级高
   // ⇒ 反转为：**只在交换严格更优（多救回主体）时置换**，且救不回就不动。
   const doc = fatDoc({ characters: 8, linesEach: 4 })
-  const tight = renderBackgroundForPrompt(doc, { budgetChars: 500, progressIndex: 60 })
-  const roomy = renderBackgroundForPrompt(doc, { budgetChars: 700, progressIndex: 60 })
+  const tight = renderBackgroundForPrompt(doc, { budgetChars: 650, progressIndex: 60 })
+  const roomy = renderBackgroundForPrompt(doc, { budgetChars: 850, progressIndex: 60 })
 
-  assert.ok(tight.coarsened.length > 0, '预算 500：旧设计一个都不粗化；3.0 用置换把被丢主体救成锚')
-  // ⚠️ 置换的验收口径：**dropped 清零**（每个主体至少露一个锚），说明句的数量一致。
+  assert.ok(tight.coarsened.length > 0, '预算 650：旧设计一个都不粗化；3.0 用置换把被丢主体救成锚')
+  // ⚠️ 置换的验收口径：**dropped 清零**（每个主体至少露一个锚），记号的数量一致。
   assert.equal(tight.trimmed.length, 0, '不该再有"整块被丢"的记录 —— 都降成锚了')
   const claimed = tight.coarsened.reduce((sum, entry) => sum + entry.coarsened, 0)
-  const matched = /本节有 (\d+) 个主体只列出最近一条记载/.exec(tight.text)
-  assert.ok(matched !== null, `应当出现说明句：${tight.text.slice(0, 200)}`)
-  assert.equal(Number(matched[1]), claimed, '说明句里的数字必须与实际一致')
+  const matched = /（\+(\d+)）/.exec(tight.text)
+  assert.ok(matched !== null, `应当出现记号：${tight.text.slice(0, 200)}`)
+  assert.equal(Number(matched[1]), claimed, '记号里的数字必须与实际一致')
 
   // 空间够时照旧整段展开（旧性质不回退）。
   assert.ok(roomy.coarsened.length > 0, '空间够时它才补位')

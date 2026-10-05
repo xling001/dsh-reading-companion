@@ -98,6 +98,46 @@ function scriptedFill(steps) {
   return { fill, calls }
 }
 
+/**
+ * 补齐的两条**看不见的事实**（2026-10-06 读者真机测试提问）—— 它们不是错误，是读者在界面上
+ * **无从知道**、却会影响判断的事：
+ *   · 子代理挂在哪个会话下（绑定会话不在线时会落回"点补齐的那个会话"）；
+ *   · 这次写到哪（未绑定的书会落回**插件目录** ⇒ 工作区里不会出现「陪读_书名」文件夹）。
+ *
+ * 可证伪：把 `fillFactsNote` 里读 `data.subagentParent` / `data.companionDir` 的那两句删掉
+ * ⇒ 下面几条断言红。
+ */
+test('补齐的两条"看不见的事实"：子代理挂谁下 / 这次写到哪', async () => {
+  const { fillFactsNote } = await internals()
+
+  assert.equal(fillFactsNote(null), '', '没有响应 ⇒ 一句都不多说')
+  assert.equal(fillFactsNote({}), '', '两条都没有 ⇒ 空串（不许凭空造一句）')
+
+  assert.match(
+    fillFactsNote({ subagentParent: { sessionId: 'session-x', bound: false } }),
+    /你点补齐的这个会话/,
+    '兜底生效（绑定的读书会话不在线）必须说出来',
+  )
+  assert.match(
+    fillFactsNote({ subagentParent: { sessionId: 'session-x', bound: true } }),
+    /这本书绑定的会话/,
+    '挂在绑定会话下也照实说',
+  )
+
+  const warn = fillFactsNote({
+    companionDir: { path: 'C:\\x\\books\\y', scope: 'plugin', reason: 'no-binding' },
+  })
+  assert.match(warn, /插件自己的目录/, '落回插件目录要**警告**（真机实测：读者以为补齐没跑成）')
+  assert.match(warn, /不会出现/, '并说清"工作区里不会有那个文件夹"')
+  assert.match(warn, /重新检测位置/, '还要给出怎么搬到工作区')
+
+  assert.equal(
+    fillFactsNote({ companionDir: { path: 'E:\\ws\\陪读_x', scope: 'workspace' } }),
+    '',
+    '正常落在工作区 ⇒ 不多说一句（别把提示条撑满）',
+  )
+})
+
 /** 一批成功的应答。`partial` 缺省为 true（服务端说"没补到底"）。 */
 function batch({ first = 1, last = 240, remaining = 100, partial = true, elapsedMs = 700 } = {}) {
   return {

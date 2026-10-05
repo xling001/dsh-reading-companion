@@ -53,7 +53,9 @@ test('预算充足时**一节都不能少**（这是旧版最刺眼的一个 bug
   assert.deepEqual(out.omitted, [], '预算充足时不该丢任何一节')
   assert.deepEqual(out.trimmed, [], '也不该截断任何一节')
   assert.match(out.text, /甲 ↔ 乙/)
-  assert.match(out.text, /### 甲/)
+  // ⚠️ 2026-10-06 起（A 版）：名下只有一条的主体在**注入里**压成一行（`- 甲：…`，不出 `###`
+  //    表头，零内容损失）⇒ 两种形状都算"这一节在"。文件与回显的形状不变。
+  assert.match(out.text, /### 甲|- 甲：/)
   assert.match(out.text, /江湖与魔教/)
 })
 
@@ -89,7 +91,8 @@ test('节内截断：保留近期条目，并写明还剩几条没展示', () =>
   assert.ok(out.trimmed[0].dropped > 0)
   assert.equal(out.trimmed[0].shown + out.trimmed[0].dropped, out.trimmed[0].total)
   // 丢掉多少必须写在文本里——否则模型会以为"没提到的就是不存在"。
-  assert.match(out.text, /另有 \d+ 条设定未在此展示/)
+  // ⚠️ 2026-10-06 起是**极短记号 `（+N）`**，含义由注入顶部的图例定义（`BACKGROUND_LEGEND`）。
+  assert.match(out.text, /（\+\d+）/)
   // 近期的优先：最后一条（第40章）一定在。
   assert.match(out.text, /第40章/)
 })
@@ -104,15 +107,18 @@ test('节内截断：人物以"位"为单位取舍，不会把某个人截成半
 
   const out = renderBackgroundForPrompt(doc, { budgetChars: 700, progressIndex: 30 })
   assert.equal(out.trimmed.length, 1)
-  assert.match(out.text, /另有 \d+ 位人物未在此展示/)
+  assert.match(out.text, /（\+\d+）/, '截断要用记号说出来（含义见图例）')
 
-  // 每一位出现的人物都必须带着他名下的条目，不能只有 `### 名字`。
+  // 每一位出现的人物都必须带着他名下的条目，不能只有 `### 名字`（或一个空壳）。
+  // ⚠️ 2026-10-06 起（A 版）**有两种形状**：`### 甲` + `- 条目`，或薄主体压成的一行
+  //    `- 甲：条目`。判据要同时认它们，否则这条用例会因为"全是薄主体"而误报。
   // ⚠️ 得把分区标题 `### 人物` 本身排除掉——它是分区标题，不是人名。
-  const names = [...out.text.matchAll(/^### (.+)$/gm)]
+  const headings = [...out.text.matchAll(/^### (.+)$/gm)]
     .map((match) => match[1])
     .filter((name) => name !== '人物')
-  assert.ok(names.length > 0, '预算足够时应当至少留下一位人物')
-  for (const name of names) {
+  const flattened = [...out.text.matchAll(/^- ([^↔：]+)：/gm)].map((match) => match[1].trim())
+  assert.ok(headings.length + flattened.length > 0, '预算足够时应当至少留下一位人物')
+  for (const name of headings) {
     const after = out.text.slice(out.text.indexOf(`### ${name}`))
     const nextHeading = after.indexOf('\n### ', 1)
     const block = nextHeading === -1 ? after : after.slice(0, nextHeading)
@@ -149,8 +155,11 @@ test('该不该压缩：判据用**不设预算**的完整用量，而不是被�
 
 test('该不该压缩：阈值被夹在 0.1–1，配置写飞了也不会失控', () => {
   const doc = docOf(['<!-- drc-background: schema=1 covered=1..3 -->', '## 世界观', '- 一句话'])
-  assert.equal(needsCompaction(doc, { budgetChars: 100, threshold: 99 }).over, false)
-  assert.equal(needsCompaction(doc, { budgetChars: 100, threshold: -5 }).over, true)
+  // ⚠️ 2026-10-06：注入头部有一段**固定图例**（约 140 字，`BACKGROUND_LEGEND`）⇒
+  //    `fullChars` 的下限抬到了 ~155 字，所以探边界要用**大于图例**的预算
+  //    （原来是 100，那比图例本身还小 ⇒ 连空文件都会判"超了"）。
+  assert.equal(needsCompaction(doc, { budgetChars: 400, threshold: 99 }).over, false)
+  assert.equal(needsCompaction(doc, { budgetChars: 400, threshold: -5 }).over, true)
 })
 
 //#endregion

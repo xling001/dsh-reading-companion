@@ -339,7 +339,7 @@ test('倒退过滤：人物**卡片留住、超前的条目逐条丢掉**（2026
 
   const out = renderBackgroundForPrompt(doc, { budgetChars: 6000, progressIndex: 50, maxChapter: 50 })
 
-  assert.match(out.text, /### 甲/, '甲有已读条目 ⇒ 卡必须留着')
+  assert.match(out.text, /### 甲|- 甲：/, '甲有已读条目 ⇒ 卡必须留着（形状见下）')
   assert.match(out.text, /出场时是个学徒/, '已读的那条留着')
   assert.doesNotMatch(out.text, /后来成了掌门/, '⚠️ 超前的**那一条**必须丢掉（这一次反转的就是它）')
   assert.doesNotMatch(out.text, /才登场/, '只出现在第 800 章的「乙」整块丢掉（他还没出场）')
@@ -781,10 +781,18 @@ test('在线折叠：离场人物（最后提及距今 ≥ 阈值）⇒ 注入�
   const doc = parseBackground(OFFLINE_DOC)
   const r = renderBackgroundForPrompt(doc, { budgetChars: 9000, progressIndex: 89, personOfflineChapters: 60 })
   // 甲：读第 90 章 − 最后提及第 20 章 = 70 ≥ 60 ⇒ 折叠
-  const pessoa段 = r.text.slice(r.text.indexOf('### 人物' + '\n'), r.text.indexOf('（另有'))
+  // ⚠️ 搜记号必须**从节标题之后开始**：注入头部的图例里就有 `（+N）` 的**字面**，
+  //    从全文搜会先撞上图例（这一条用例第一版就是这么红的）。
+  const 人物起 = r.text.indexOf('### 人物' + '\n')
+  const 人物止 = r.text.indexOf('（+', 人物起)
+  const pessoa段 = r.text.slice(人物起, 人物止 === -1 ? undefined : 人物止)
   assert.ok(pessoa段.includes('离开了渡口'), '锚（最新一条）必须在')
   assert.ok(!pessoa段.includes('渡口少年'), '更早的条目不随行（折叠成一条）')
-  assert.match(r.text, /另有 1 位人物已\*\*离场\*\*/, '折叠要说出来（可解释）')
+  // ⚠️ 2026-10-06 起：**提示词里折叠与粗化合成一个 `（+N）` 记号**（对模型是同一件事，
+  //    见 `BACKGROUND_LEGEND`），但**台账必须分开给** —— "N 位人物已离场"是能改变读者
+  //    判断的信息（否则他以为人物卡被压缩器吃了）。
+  assert.match(r.text, /（\+1）/, '折叠要在提示词里留下记号（可解释）')
+  assert.deepEqual(r.folded, [{ name: '人物', folded: 1 }], '折叠台账要如实给出来（读者侧不合并）')
   const 状态段 = r.text.slice(r.text.indexOf('### 人物状态') + 1, r.text.indexOf('### 人物状态') + 400)
   assert.ok(状态段.includes('在城中被围'), '⚠️ 状态段得**真在**，否则下面那条断言是假绿')
   assert.ok(!状态段.includes('离开渡口，去向不明'), '离场人物的状态行不注入（过期现状误导）')

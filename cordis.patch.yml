@@ -150,6 +150,21 @@
           # view only -- the file is untouched; he unfolds automatically when he
           # reappears. 0 disables it.
           personOfflineChapters: 60
+          # Anchor retirement (2026-10-06): an out-of-window subject keeps ONE entry as
+          # his "who is he" anchor -- but that anchor is a MONOTONE FLOOR (compaction must
+          # keep every subject, archiving keeps the anchor), so the 人物 section's floor is
+          # card-count x ~45 chars, independent of how far you have read. Measured on a
+          # 1428-chapter novel: ~476 cards -> ~21k chars -> compaction hits the output wall
+          # and the injection degrades into a roster. Once a subject has not been mentioned
+          # for this many chapters, the anchor is archived too (text is kept in 冷档案, the
+          # AI just stops seeing it). 0 disables retirement.
+          anchorMaxAgeChapters: 360
+          # Roster rendering (2026-10-06): subjects whose entries have ALL left the active
+          # window are injected as ONE line of bare names instead of a `### name` block.
+          # Costs ~3 chars per name instead of ~45, so the budget goes back to the subjects
+          # who are still on stage. This is the maximum number of names listed; the rest is
+          # reported as a count. ACTIVE subjects are never roster-ized.
+          rosterMaxNames: 120
           compactThreshold: 0.85
           discussionLimit: 8
 
