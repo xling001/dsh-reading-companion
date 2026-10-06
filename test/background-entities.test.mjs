@@ -768,3 +768,19 @@ test('「只写一次」的例外：调用方**显式点名取代**时换手（�
   assert.deepEqual(plain.sections['文本类型'], ['原始指南针：武侠百合，双主角。'], '模型自己写的重复内容照样丢弃')
   assert.equal(plain.retired.length, 0, '丢弃不是取代 ⇒ 不留归档')
 })
+
+test('写盘：空的「废弃节」不写标题，有内容照旧写回（2026-10-05 读者拍板）', () => {
+  // ⚠️ 背景：「前文脉络」3.0 起并进「时间与分线」——**当年正是因为内容重复才不要它的** ✓，
+  //    但 `renderBackground` 从前**无条件写每个注册节的标题** ✗ ⇒ 新文件里永远留一个
+  //    "什么都没有的旧节"（读者看到会以为漏了什么）。
+  //    这条钉两件事：① 空的废弃节**不写标题**；② 老文件里真有内容时**照旧写回**（数据不许丢）。
+  const emptyDoc = parseBackground('<!-- drc-background: schema=1 covered=1..5 -->\n\n# 《书》· 背景认识\n\n## 人物\n### 甲\n- `第1章` 出场\n')
+  const emptyText = renderBackground(emptyDoc, '书')
+  assert.doesNotMatch(emptyText, /^## 前文脉络$/m, '空的废弃节不写标题')
+  assert.match(emptyText, /^## 冷档案$/m, '⚠️ 活节（冷档案）的空标题要留着 —— 那是有意的占位')
+
+  const legacyDoc = parseBackground('<!-- drc-background: schema=1 covered=1..5 -->\n\n# 《书》· 背景认识\n\n## 前文脉络\n- `第1-9章` 初遇\n')
+  const legacyText = renderBackground(legacyDoc, '书')
+  assert.match(legacyText, /^## 前文脉络$/m, '老文件里有内容 ⇒ 标题照旧写回')
+  assert.ok(legacyText.includes('初遇'), '内容也要写回（读者的数据不许丢）')
+})
