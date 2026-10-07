@@ -294,11 +294,50 @@ test('接线：共享缺省值只在 host/defaults.js 里写字面量（两边�
       problems.push(`${key}: lib/index.js 又写回了字面量 —— ${backslide[0].trim()}`)
     }
   }
+  // ⚠️ 2026-10-07（工单 B3）：`foundationBudgetChars` 的**第二个落点不在 `library.js`**，
+  //    而在 `lib/host/memory-pipeline.js`（`config.sample?.foundationBudgetChars` 的兜底）——
+  //    所以它进不了上面那个"index.js + library.js"的循环 ⇒ 单列一条，判据完全相同。
+  //    它是 `defaults.js` 里唯一"落点是 index.js + memory-pipeline.js"的一对 ✓。
+  {
+    const key = 'foundationBudgetChars'
+    const pipelineSrc = readFileSync(join(ROOT, 'lib', 'host', 'memory-pipeline.js'), 'utf8')
+    const literals = homeSrc.split('\n').filter((line) => new RegExp(`^\\s*${key}:\\s*-?\\d`).test(line))
+    if (literals.length !== 1) {
+      problems.push(`${key}: defaults.js 里的字面量有 ${literals.length} 处，应当正好 1 处`)
+    }
+    const ref = `HOST_DEFAULTS.${key}`
+    if (!indexSrc.includes(ref)) problems.push(`${key}: lib/index.js 没有引用 ${ref}`)
+    if (!pipelineSrc.includes(ref)) problems.push(`${key}: lib/host/memory-pipeline.js 没有引用 ${ref}`)
+    // 反向：index.js 里不许再有 `key: <数字>`（配置缺省又写回字面量）
+    const backslide = indexSrc.split('\n').filter((line) => new RegExp(`^\\s*${key}:\\s*-?\\d`).test(line))
+    if (backslide.length > 0) {
+      problems.push(`${key}: lib/index.js 又写回了字面量 —— ${backslide[0].trim()}`)
+    }
+  }
+
   assert.deepEqual(
     problems,
     [],
     `共享缺省值必须同源于 host/defaults.js 的 HOST_DEFAULTS（分叉过一次的东西别再靠纪律）：\n`
       + problems.join('\n'),
+  )
+})
+
+test('接线：注入的分区标题模板只有一处定义（预算与实际渲染不许各写一遍）', () => {
+  // ⚠️ 2026-10-07（工单 A2）：从前**四处**各写了一遍同一个模板 ✗ ——
+  //    `headerCost`（预算记账）与 `headerText`（实际渲染）是两个字面量，
+  //    另有 `metaHeader`（文本类型）与 `stateHeader`（人物状态）又各写一份
+  //    ⇒ 改一处忘另一处 = **预算与实际渲染漂移** ✗（`defaults.js` 整个文件要防的那类病）。
+  //    现在四处都走 `sectionHeaderText(name)` ⇒ 这条钉"**模板字面量只许出现一次**"。
+  //    ⚠️ 注释行要排除：讲解这件事的注释里也会出现这个形状（否则守卫会数到自己人）。
+  const src = readFileSync(join(ROOT, 'lib', 'host', 'background.js'), 'utf8')
+  const hits = src.split('\n')
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .filter((line) => /`\\n### \$\{/.test(line))
+  assert.equal(
+    hits.length,
+    1,
+    `分区标题模板出现了 ${hits.length} 次，应当只有 sectionHeaderText 里那 1 次：\n${hits.join('\n')}`,
   )
 })
 

@@ -64,6 +64,21 @@ test('补齐提示词：长度上限（人物关系 80 字、其余 40 字），
   for (const section of ['人物关系', '人物', '世界观', '文风（只写一次）', '通用概念']) {
     assert.ok(prompt.includes(`## ${section}`), `提示词里少了分区 ${section}`)
   }
+  // ⚠️ 2026-10-07（工单 A1）：**格式块里「文风」的示例从前带着 `` `第1章` ``** ✗ ——
+  //    而规则 1 与下面的条件说明**都说不带锚点**（它是整本书的特征）⇒ **示例在教错形状** ✗。
+  //    真机复发过：3.1.23 为《魔女霓裳》的文风带着 `第1章` 修过，但当时只改了**规则文字**、
+  //    示例没跟着改 ⇒ 模型照示例写。这条钉的正是**示例本身**（不是规则文字）。
+  const styleBlock = prompt.slice(prompt.indexOf('## 文风（只写一次）'))
+  const styleExample = styleBlock.split('\n').slice(1).find((line) => line.trim() !== '') ?? ''
+  assert.ok(
+    styleExample.startsWith('- '),
+    `「文风」格式块的第一条示例形状变了（预期以 "- " 开头）：${styleExample}`,
+  )
+  assert.doesNotMatch(
+    styleExample,
+    /第\s*\d+\s*章/,
+    '「文风」示例不许带章号锚点 —— 它是整本书的特征，带了会被读成"第1章的风格"',
+  )
 })
 
 test('补齐提示词：同一个人只能有一个 ### 主体，别名写进内容（防"人物卡出现两个同名"）', () => {
