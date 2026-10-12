@@ -19,7 +19,8 @@
   <img src="docs/images/01-shelf-and-chat.png" alt="书架与聊天窗口：左侧会话里陪读 AI 在聊读后感想，右侧「本地书架」面板列出导入的书、分组、分类与绑定状态">
 </p>
 
-[缘起](#缘起因为某本书才想做这样一个插件) · [五个特色](#五个特色) · [怎么用](#怎么用) · [防剧透](#防剧透三层) · [安装](#安装) · [配置参考](#配置参考) · [数据目录](#数据目录) · [开发](#开发)
+[缘起](#缘起因为某本书才想做这样一个插件) · [五个特色](#五个特色) · [怎么用](#怎么用) · [防剧透](#防剧透三层) · [导出到笔记库](#导出到笔记库) · [背景认识](#背景认识记忆) · [安装](#安装) · [配置参考](#配置参考)
+[数据目录](#数据目录) · [安全与隐私](#安全与隐私) · [架构简介](#架构简介) · [开发](#开发) · [贡献者](#贡献者) · [对比与参考](#对比与参考) · [许可](#许可)
 
 > **每个版本改了什么** → 见 [**Releases**](https://github.com/xling001/dsh-reading-companion/releases)（只写读者能感知的结论）。**这份 README 只讲它现在是什么、能做什么、怎么用** —— 更新说明不放在这里。
 
@@ -120,16 +121,18 @@
 | **路径闸**（`spoilerGate`） | **硬保证**（唯一例外见下） | 参数指向本书 `content.txt` / `source.txt` / `chapters.json` 的调用一律拒绝，**与会话归属无关**。⚠️ **唯一例外**：你在面板里声明「这本书已读完」之后，**这一本**的原始文本对你放开（界面常驻显示，可一键收回） |
 | **联网闸**（`webGate`） | 启发式 / 可关 | 见下 |
 
-它每轮实际拿到的只有三样：**本章全文**、**上一章结尾**、那份**背景认识**——外加你贴过去的摘抄。
-**你还没读到的地方，它字面上拿不到**：路径闸连"模型自己想办法去读文件"这条路都堵了（`../` 之类的绕过也挡，有专测）。
-⚠️ **但它是"路径闸"不是"文件闸"**：Windows 的 8.3 短名与硬链接能指向同一个文件而路径不同，**这两种仍能绕过**（见下方「安全与隐私」的边界表）。
-**读完一本书之后**，你可以在面板里标记「已读完」解锁它：那只放开**这一本**的原文（"你问，它才读得到"），**不影响每轮自动投喂的内容**，而且可以一键收回。
+- 它每轮实际拿到的只有三样：**本章全文**、**上一章结尾**、那份**背景认识** —— 外加你贴过去的摘抄
+- **你还没读到的地方，它字面上拿不到**：路径闸连"模型自己想办法去读文件"这条路都堵了（`../` 之类的绕过也挡，有专测）
+- ⚠️ **但它是"路径闸"不是"文件闸"**：Windows 的 8.3 短名与硬链接能指向同一个文件而路径不同，**这两种仍能绕过**（见下方「[安全与隐私](#安全与隐私)」的边界表）
+- **读完一本书之后**，你可以在面板里标记「已读完」解锁它：那只放开**这一本**的原文（"你问，它才读得到"），**不影响每轮自动投喂的内容**，而且可以一键收回
 想亲眼复核它到底收到了什么：注入的内容由插件的只读接口原样给出 ——
 `GET /dsh-reading-companion/api/books/<bookId>/context`（面板里**不再**放这个入口，
 因为它只是「别处状态的视图」，摆一节在那里会让人以为它可以单独重建）。
 
 联网闸是**启发式**：扫工具参数里有没有书名、人物名、"结局/剧透"这类词，能挡住无心之失，
 **挡不住刻意查询**——这一点写在守则里，也写在 [`docs/design.md`](./docs/design.md) 里，不装成"绝对防得住"。
+
+---
 
 ## 导出到笔记库
 
@@ -146,6 +149,8 @@
 - **绝不往陌生文件里写。** 每个导出文件头部有一条 `<!-- drc-export book=… -->` 标记；目标属于别的书、
   或者压根没有标记（那是你自己写的文件），一律拒绝并报错。
 - **手写的、没有 id 的笔记块不导出**，并会明说几条。
+
+---
 
 ## 背景认识（记忆）
 
@@ -223,10 +228,11 @@ node scripts/link-into-profile.mjs --profile desktop --unlink    # 完全回滚
 
 </details>
 
-### ⚠️ 装完必须重启 DSH Desktop
+### 装完必须重启 DSH Desktop
 
-`dsh.profile.bundles` **只在启动时读取一次**。`patchReload: "live"` 只覆盖 `cordis.patch.yml` 的改动，
-覆盖不了"新增一个 bundle"。**刷新页面不够，要重启应用**（`dsh web` 同理：重启那个进程）。
+> [!IMPORTANT]
+> `dsh.profile.bundles` **只在启动时读取一次**。`patchReload: "live"` 只覆盖 `cordis.patch.yml` 的改动，
+> 覆盖不了"新增一个 bundle"。**刷新页面不够，要重启应用**（`dsh web` 同理：重启那个进程）。
 
 ### 验证
 
@@ -239,7 +245,7 @@ node scripts/link-into-profile.mjs --profile desktop --unlink    # 完全回滚
 （`sidebarRightTabs` 是 `0.1.5` 起才有的服务，缺了它 cordis 不执行 `apply`、**也不报错**）
 → 都没有看控制台报错，请开 issue。
 
-接着导一本书、读一章、记一条笔记。最短全流程与发版前的真机回归清单在 [`docs/manual-testing.md`](./docs/manual-testing.md)（⚠️ 这份是**开发用**的，不随包发布）。
+接着导一本书、读一章、记一条笔记。最短全流程与发版前的真机回归清单在 [`docs/manual-testing.md`](./docs/manual-testing.md)（**开发 / 回归用**，随包发布，但正常使用不需要读它）。
 
 ### 关闭与卸载
 
@@ -334,7 +340,7 @@ $DSH_HOME/dsh-reading-companion/      # 默认；可用 storageDir 覆盖
 
 | 要求 | 实现 |
 |---|---|
-| 数据本地化 | 原书 TXT、章节索引、笔记 md、背景认识**全程留在本地**，不上传任何服务器 |
+| 数据留在本地 | 原书 TXT、章节索引、笔记 md、背景认识**全程存在你自己的磁盘上**，插件不主动上传任何东西。⚠️ **但你发出去的对话会随请求进模型服务**（能发多少见下一条） |
 | 只发该发的 | 只有你主动发感想时，被裁切过的那段正文才随对话进入模型请求——裁切范围是「**前文 + 本章已读**」，不含后续剧情 |
 | 导出可控 | 只写到你指定的那个目录，也只在你点了按钮之后才写；**不会改动**陪读文件夹里的任何东西 |
 | 不覆盖你的字 | 导出**只追加**，并靠文件头部的 `<!-- drc-export book=… -->` 标记拒绝写进陌生文件 |
@@ -342,6 +348,7 @@ $DSH_HOME/dsh-reading-companion/      # 默认；可用 storageDir 覆盖
 | ⚠️ 路径闸的边界（未修） | 闸判的是**路径**，不是**文件本身**。Windows 的 **8.3 短名**（`PROGRA~1` 这类）与**硬链接**都能指向同一个文件而路径不同 ⇒ **它们仍能绕过**。要挡住得做 inode / 文件 id 比对，当前没做 |
 | ⚠️ 交接棒有 120 秒保质期（静默丢弃） | 把摘抄"发到会话"、而这本书绑的是**另一个**会话时，文字会先交接过去、等那边把面板挂起来接住。**超过 120 秒没人接就静默丢掉** —— 你会看到"已放进输入框"但输入框里没有。遇到就重发一次 |
 | ⚠️ 彻底删除存在 TOCTOU 缝隙（已知限制） | `purgeNotes` 的保险是"先备份 → 写前核对文件没被别人改过 → 才写"。核对与写入之间仍有极短窗口：若外部程序**恰好在那一瞬**改动 `notes.md`，可能覆盖掉那次改动。已裁定为**已知限制，不修**（代价是给每次清理加一把常驻文件锁） |
+| ⚠️ 压缩的校验是**结构级**的（已知限制） | 五条硬校验只管**结构**（覆盖不许变小 / 人物·主体·一对关系·章号锚一个不少 / 读者族一条不丢 / 必须真的变小），**不判断语义**：模型若把「A 不知道 B 已死」并成「A 知道 B 已死」，校验照样放行。保险是"压不到就不要硬删" + **压缩前留一代备份、一份不删** ⇒ 真丢了细节可以回上一代比对 |
 | 无遥测 | 本插件没有账号、没有云、没有书源，也不含任何遥测/行为分析代码 |
 
 <details>
@@ -380,7 +387,7 @@ scripts/
 ├── archive-background.mjs  # 冷归档：把超出活跃窗口的旧条目搬进「冷档案」（纯代码、零模型调用）
 ├── merge-background-history.mjs # 取并集：把历代增量备份 + 当前文件合成"最详细的全文分析"
 └── clean-background-note.mjs # 清理 background.md 的注释残留（默认预览，需 --file 指定）
-docs/                       # design（现行）/ design-v1-archive（封存）/ manual-testing / publishing
+docs/                       # design（现行）/ manual-testing / publishing（design-v1-archive 只在作者本地，未入库）
 ```
 
 关键设计：
@@ -392,6 +399,8 @@ docs/                       # design（现行）/ design-v1-archive（封存）/
 - **不改写用户的历史**：`background.bak.*` 一代不删，导出的"压缩前"一代一个文件；合并这类需要判断的事交给外部工具。
 
 </details>
+
+---
 
 ## 开发
 
@@ -409,11 +418,13 @@ node scripts/archive-background.mjs --file <background.md 路径> --progress 300
 node scripts/merge-background-history.mjs --dir <background.history> --include-current --file <background.md>  # 取并集（默认预览）
 ```
 
-> ⚠️ **上面不是完整清单**（`scripts/` 里还有 `merge-background-subjects.mjs`、
+> [!WARNING]
+> **上面不是完整清单**（`scripts/` 里还有 `merge-background-subjects.mjs`、
 > `link-into-profile.mjs`、`guard-census.mjs`）—— **以目录为准**，别在这里维护第二份。
 > 同理**用例数不写死**：每加一条守卫它就过期一次，要看当前数请跑 `npm run guard:census`。
 
-> ⚠️ **这些开发脚本只在源码仓库里，发行包不带**：发行包只发布
+> [!WARNING]
+> **这些开发脚本只在源码仓库里，发行包不带**：发行包只发布
 > `scripts/reindex-books.mjs`（**读者面**的那一个 —— 升级后书库索引要重建一次）。
 > 其余（重建索引 / 清背景笔记 / 冷归档 / 合并背景史 / 改主体名 / 挂进 profile / 普查工具）
 > 属于开发侧，**不随包发布**。从 npm 装来的读者只能跑 `reindex-books`；
@@ -421,25 +432,30 @@ node scripts/merge-background-history.mjs --dir <background.history> --include-c
 > **派生**的守卫：目录里每个 `scripts/*.mjs` 都必须被明确分类（随包发布 / 显式排除），
 > 新增脚本时它会红，逼你表态。
 
+> [!NOTE]
 > **冷归档是什么**：把**超出活跃窗口**（默认 120 章）的旧条目从活分区**搬**进 `## 冷档案`
 > —— **纯代码、零模型调用、原文一字不改**。它不进提示词（读者族），所以注入量由"活跃窗口"决定，
 > 而不是由"全书条数"决定。每次搬运都会：① 整份备份 `background.bak.<时间戳>.md`；
 > ② 往 `background.history/` 写一份**只记这一笔**的增量（`0007-20261002-031500-归档.md`，序号即时间序、
 > 互不重复）；③ 于是你可以随时用 `merge-background-history.mjs` **取并集**，得到最详细的全文分析。
-> 动机与上限（模型单次输出 32768 tokens、压缩=整份重写 ⇒ 约 1.2–1.5 万字就压不动）见 `docs/design-history.md` v2.22。
+> 动机与上限：模型单次输出 32768 tokens、而压缩是**整份重写** ⇒ 约 1.2–1.5 万字就压不动。
 >
 > **自动备份**（3.0）：**自动**归档 / 自动压缩时，还会把处理后的全文导出到导出文件夹的
 > `陪读导出_<书名>/自动备份/<书名>-第N次自动备份.md`（**后缀只有一个**，归档与压缩共用序号池；
 > 内容与已有备份一字不差时不重复写）；**手动**压缩的备份位置不变（陪读文件夹里的 `background.bak.<时间戳>.md`）。
 
+> [!NOTE]
 > `rebuild-library-index.mjs` 是 **`library.json` 损坏之后唯一的恢复入口**：损坏时书架会显示成空的
 > （书其实都还在磁盘上），这个脚本按每本书自己的 `meta.json` 把索引重建回来 —— **只补不丢**，
 > 读不出 `meta.json` 的书保留原条目。
 
 - **改完即生效**：`lib/` 就是源码，重启 DSH Desktop 即可（本插件没有构建产物，所以也没有"改 `src/` 触发重载"那一层）。
 - **改切分规则**不会自动作用于已导入的书（导入是幂等的），所以老书要么删掉重导（丢笔记、丢进度），要么用 `reindex-books.mjs` 就地重切。
-- **CI**：GitHub Actions 跑 `node --test`，矩阵 `Node 22.19 / 24 × ubuntu / windows`。⚠️ 不要在 CI 里加 `--test-isolation=none`——那个开关在 Node 22.19 上不存在，会让两档以退出码 9 当场失败（v2.0.4 首发时真踩过，见 `docs/design-v1-archive.md` v1.40）。
+- **CI**：GitHub Actions 跑 `node --test`，矩阵 `Node 22.19 / 24 × ubuntu / windows`。⚠️ 不要在 CI 里加 `--test-isolation=none` —— 那个开关在 Node 22.19 上不存在，会让两档以退出码 9 当场失败（v2.0.4 首发时真踩过）。
+- ⚠️ **CI 上碰不到宿主**：那里没有 DSH，`test/cordis-integration.test.mjs` 的 3 个真宿主用例会**静默跳过** —— 这层覆盖只有**本机**跑才有。启用办法：在 `test/.dsh-app-path` 里写一行你本机的 DSH `node_modules` 路径（**该文件不入库**，每人一份）。
 - 代码结构、测试清单、以及**客户端测试替身的盲区**都在 [`CONTRIBUTING.md`](./CONTRIBUTING.md)。
+
+---
 
 ## 贡献者
 
@@ -450,9 +466,32 @@ node scripts/merge-background-history.mjs --dir <background.history> --include-c
 
 **本仓库的代码主要由 AI 编写。** 人类作者负责提出要解决什么问题、在几个方案之间做选择、以及在真机上发现"哪里不对"。
 
-## 与同类插件的区别，以及参考了哪些插件
+---
 
-同类里定位最接近的是 [dsh-reader](https://github.com/Wodexinhaoleng-Kasssa/dsh-reader)（用 DOM 选择器冒充插槽，在本机 DSH 上中央列会被清空，且没有任何 AI 机制）与 [dsh-novel-forge](https://github.com/huangziyuan-general/dsh-novel-forge)（**创作**工具台，本项目只读）—— 本项目**只往官方插槽注册**，页签落在右侧栏、不接管中央列，因此与 [dsh-tavern](https://github.com/Player-MINEPIG/dsh-tavern) 这类插件共存无冲突。具体借鉴的是几处**模块**：`dsh-reader` 的编码探测顺序与章节正则基线（连同它几个真实故障的反面教训）、`dsh-tavern` 的路径闸做法、官方 `dsh-client-ui-sidebar-right` / `dsh-client-modules` 的客户端半边写法与发现契约；`dsh-adaptive-context` 提供过一条踩坑形状，`dsh-novel-solo` / `dsh-talebook-plugin` 只做过定位对比。出处都在源码注释里（`grep dsh-` 就能找到）。**另有一个不同形态的参考**：[对坐 duizuo-reading-companion-skill](https://github.com/locoda/duizuo-reading-companion-skill)（Agent Skill，MIT）—— 我们只借鉴了它守则里"**防说**"的那一半：元剧透清单、引文只能来自原文、来源声明与"读者优先于二手来源"。它"**防读**"的那一半（阅读范围 / 阅读单元 / `scope_handle` 契约 / 前后材料隔离）**没有抄**：那些是为"电子本就在模型手边"设计的，而我们的投喂层已经结构性地不含后文 —— 判据是「凡是在防"读"的不抄，凡是在防"说"的抄」。
+## 对比与参考
+
+**定位对比** —— 同类里没有第二个"结构化记忆 + 物理防剧透"的：
+
+| 插件 | 关系 |
+| --- | --- |
+| [dsh-reader](https://github.com/Wodexinhaoleng-Kasssa/dsh-reader) | 定位最接近，但用 DOM 选择器冒充插槽（在本机 DSH 上中央列会被清空），且没有任何 AI 机制 |
+| [dsh-novel-forge](https://github.com/huangziyuan-general/dsh-novel-forge) | **创作**工具台；本项目只读 |
+| [dsh-tavern](https://github.com/Player-MINEPIG/dsh-tavern) | 共存无冲突 —— 本项目只往**官方插槽**注册，页签落在右侧栏、不接管中央列 |
+| `dsh-novel-solo` / `dsh-talebook-plugin` | 只做过定位对比 |
+
+**具体借鉴** —— 每条都有代码落点，出处写在源码注释里（`grep dsh-` 就能找到）：
+
+| 来源 | 借鉴了什么 |
+| --- | --- |
+| `dsh-reader` | 编码探测顺序、章节正则基线（连同它几个真实故障的反面教训） |
+| `dsh-tavern` | 路径闸的做法 |
+| 官方 `dsh-client-ui-sidebar-right` / `dsh-client-modules` | 客户端半边的写法与发现契约 |
+| `dsh-adaptive-context` | 一条踩坑形状 |
+| [对坐 duizuo-reading-companion-skill](https://github.com/locoda/duizuo-reading-companion-skill)（Agent Skill · MIT） | 守则里「**防说**」的那一半：元剧透清单、引文只能来自原文、来源声明与「读者优先于二手来源」 |
+
+对坐「**防读**」的那一半**没有抄**（阅读范围 / 阅读单元 / `scope_handle` 契约 / 前后材料隔离）—— 那是为"电子本就在模型手边"设计的，而我们的投喂层**结构性地不含后文**。判据一句话：**凡是在防"读"的不抄，凡是在防"说"的抄。**
+
+---
 
 ## 许可
 
