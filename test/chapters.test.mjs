@@ -248,3 +248,125 @@ test('章节：validateChapters 能发现区间重叠与越界', () => {
   const outOfBounds = validateChapters([{ index: 0, startChar: 0, endChar: 30 }], 20)
   assert.ok(outOfBounds.some((p) => p.includes('超出')))
 })
+
+/**
+ * 未被任何章节覆盖、且 **> 200 字**的连续区间 —— 也就是"**内容大片不见**"。
+ *
+ * ⚠️ 阈值 200 是刻意的：标题行与空行**本来就**在章节区间之外（设计如此），
+ * 那些缝隙都在几十字以内。真正的缺陷长这样：《探虚陵·古代篇》里一条假卷后面
+ * 的 **61.7 万字**没有任何章节覆盖，阅读页根本翻不到（2026-10-15 读者实测发现）。
+ */
+function lostSpans(text, chapters) {
+  const out = []
+  let cursor = 0
+  for (const c of chapters) {
+    if (c.startChar > cursor && c.startChar - cursor > 200) out.push(text.slice(cursor, c.startChar))
+    cursor = Math.max(cursor, c.endChar)
+  }
+  if (text.length - cursor > 200) out.push(text.slice(cursor))
+  return out
+}
+
+test('章节：符号标记（☆、标题）被识别为章', () => {
+  // 读者真机《探虚陵·古代篇》的形状：前半段每章都是 `☆、标题`，238 条。
+  const text = [
+    '☆、竹林访客',
+    prose('甲'),
+    '☆、夜斗',
+    prose('乙'),
+    '☆、居心',
+    prose('丙'),
+  ].join('\n')
+
+  const { strategy, chapters } = parseChapters(text)
+
+  assert.equal(strategy, 'heading-regex')
+  assert.deepEqual(chapters.map((c) => c.title), ['☆、竹林访客', '☆、夜斗', '☆、居心'])
+  assert.deepEqual(lostSpans(text, chapters), [])
+})
+
+test('章节：纯符号的装饰分隔线不算章（☆☆☆ / ※※※）', () => {
+  // 不挡的话，每一本带装饰线的书都会多出几十个假章节 ——
+  // 它们行首同样是符号、行长也短，只有"尾部必须有实义文字"能区分。
+  const text = [
+    '第一章 雪',
+    prose('甲'),
+    '☆☆☆',
+    prose('乙'),
+    '※※※※※',
+    prose('丙'),
+    '第二章 夜',
+    prose('丁'),
+    '第三章 归',
+    prose('戊'),
+  ].join('\n')
+
+  const { chapters } = parseChapters(text)
+
+  assert.deepEqual(chapters.map((c) => c.title), ['第一章 雪', '第二章 夜', '第三章 归'])
+})
+
+test('章节：⚠️ 卷标题后面的正文不许丢（内容大片不见的回归守卫）', () => {
+  // 2026-10-15 的缺陷：卷标题不产出章节是对的，但它后面到下一个真章节之间的
+  // 正文**没人认领** ⇒ 那段在阅读页读不到。正常书里只有几个空行（所以一直没暴露），
+  // 《探虚陵》里一条假卷后面跟着 61.7 万字 ⇒ 一次丢了 57.6% 的正文。
+  const orphan = Array.from({ length: 8 }, (_, i) => prose(`无题${i}`)).join('\n')
+  const text = [
+    '第一卷 长夜',
+    '第一章 雪',
+    prose('甲'),
+    '第二卷 归途',
+    orphan,               // ← 卷标题之后、下一个真章节之前的一大段无标题正文
+    '第三章 归',
+    prose('丙'),
+  ].join('\n')
+
+  const { chapters, warnings } = parseChapters(text)
+
+  assert.deepEqual(lostSpans(text, chapters), [], '不许有任何 >200 字的无主区间')
+  assert.deepEqual(validateChapters(chapters, text.length), [])
+
+  const block = chapters.find((c) => c.title === '第二卷 归途')
+  assert.ok(block !== undefined, '那段正文要作为独立块保留（标题用卷名）')
+  assert.equal(block.kind, 'front')
+  assert.ok(text.slice(block.startChar, block.endChar).includes('无题0'), '块里就是那段正文')
+  assert.ok(warnings.some((w) => w.includes('独立块')))
+})
+
+test('章节：卷后紧跟章标题时不产生额外块（既有书零影响）', () => {
+  // ⚠️ 这一条钉的是"改动不许影响现有书"：正常书里卷标题后面**只有空行**，
+  // 那就**不该**多出一个块、也不该多出告警 —— 章数与卷分组都必须与从前逐字相同。
+  const text = [
+    '第一卷 长夜',
+    '第一章 雪',
+    prose('甲'),
+    '第二卷 归途',
+    '第三章 归',
+    prose('丙'),
+  ].join('\n')
+
+  const { chapters, warnings } = parseChapters(text)
+
+  assert.equal(chapters.length, 2, '两个卷标题都不占章节')
+  assert.deepEqual(chapters.map((c) => c.title), ['第一章 雪', '第三章 归'])
+  assert.deepEqual(chapters.map((c) => c.volume), ['第一卷 长夜', '第二卷 归途'])
+  assert.ok(!warnings.some((w) => w.includes('独立块')), '没有正文就不该报"独立块"')
+})
+
+test('章节：卷落在文件末尾时，它后面的正文也要保住', () => {
+  const orphan = Array.from({ length: 8 }, (_, i) => prose(`尾部${i}`)).join('\n')
+  const text = [
+    '第一章 雪',
+    prose('甲'),
+    '第二章 夜',
+    prose('乙'),
+    '第二卷 尾声',
+    orphan,
+  ].join('\n')
+
+  const { chapters } = parseChapters(text)
+
+  assert.deepEqual(lostSpans(text, chapters), [])
+  assert.ok(chapters.some((c) => c.title === '第二卷 尾声'))
+})
+
