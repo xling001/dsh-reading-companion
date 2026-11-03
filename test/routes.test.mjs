@@ -1006,6 +1006,7 @@ test('HTTP：lib/ 里造出来的领域错误码都有归宿（上表 / 或明�
     ['REINDEX_RANGE_DRIFT', '故意 500：重建索引会让已投喂过的正文区间变 —— 同上，宁可不落盘'],
     ['PATH_NOT_STRING', '故意 500：paths.js 的调用方传了非字符串，属内部误用'],
     ['SUBAGENTS_UNAVAILABLE', '故意 500：没有子代理能力；subagent-run 内部就消化成 { ok: false }，到不了路由层'],
+    ['SUBAGENT_API_INCOMPATIBLE', '故意 500：宿主子代理接口换代（启动成功却拿不到 result）时立刻失败；同样在 subagent-run 内部消化成 { ok: false, reason }，到不了路由层'],
   ])
   // 一次把该上表的码**全列出来**，而不是撞见第一个就红 —— 加新码时省得来回跑。
   const unmapped = []
