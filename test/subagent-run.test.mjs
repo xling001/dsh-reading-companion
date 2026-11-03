@@ -53,7 +53,11 @@ test('子代理启动：0.2.x 走 startActivation，且防剧透的 toolFilter �
   assert.equal(calls.length, 1, '只该启动一次')
   const spec = calls[0]
   assert.equal(spec.provider, 'spawn', 'provider 要用宿主默认的 spawn')
-  assert.equal(spec.delivery, 'parent')
+  // ⚠️ **`delivery` 必须是 `'caller'`**：`'parent'` 会让宿主在子代理跑完时
+  // 给主会话发一条"后台子代理完成了"的通知（主会话据此自说自话回一轮话），
+  // 还可能叫子代理用 send_message 回报。补齐/压缩是我们自己 await 结果的工作流，
+  // **不该惊动主会话** —— 2026-11-03 真机就是因为这里写成 'parent' 才冒出那段回复。
+  assert.equal(spec.delivery, 'caller', '不许让宿主通知主会话（那会让主会话回一句）')
   assert.equal(spec.label, '记忆整理')
   assert.equal(spec.request.parent, parentAgent, 'parent 必须是活 Agent 对象（传 id 会被身份校验拒掉）')
   assert.deepEqual(spec.request.prompt, [{ type: 'text', text: '把这一批写进背景' }])
