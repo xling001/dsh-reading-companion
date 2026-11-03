@@ -1793,14 +1793,91 @@ test('绑定状态：已绑定且宿主有 sessions 才做成按钮', async () =
   const { shelfBindingState } = await internals()
   assert.deepEqual(
     shelfBindingState({ sessionId: 's-1' }, () => {}),
-    { bound: true, canJump: true, label: '已绑定 · 跳过去', sessionId: 's-1' },
+    { bound: true, canJump: true, stale: false, label: '已绑定 · 跳过去', sessionId: 's-1' },
   )
   // 宿主没有 sessions 服务（openSession 为 null）时必须**退回静态标**，
   // 而不是渲染一个点了没反应的按钮。
   assert.deepEqual(
     shelfBindingState({ sessionId: 's-1' }, null),
-    { bound: true, canJump: false, label: '已绑定会话', sessionId: 's-1' },
+    { bound: true, canJump: false, stale: false, label: '已绑定会话', sessionId: 's-1' },
   )
+})
+
+test('绑定状态：会话已被删掉时显示成可重新绑定（stale）', async () => {
+  const { shelfBindingState } = await internals()
+
+  const dead = shelfBindingState({ sessionId: 's-gone' }, () => {}, () => false)
+  assert.equal(dead.bound, true)
+  assert.equal(dead.canJump, false, '会话没了就别给一个跳不过去的按钮')
+  assert.equal(dead.stale, true)
+  assert.match(dead.label, /已不存在/)
+  assert.match(dead.label, /重新绑定/)
+
+  // 宿主判断不出（回 null / undefined / 别的值）时**按"还在"处理** ——
+  // 宁可让读者点一下发现不对，也不能把正常绑定误判成失效。
+  for (const unknown of [null, undefined, 'n/a']) {
+    const state = shelfBindingState({ sessionId: 's-1' }, () => {}, () => unknown)
+    assert.equal(state.stale, false, `返回值 ${JSON.stringify(unknown)} 不该被当成"已失效"`)
+    assert.equal(state.canJump, true)
+  }
+})
+
+test('浏览器半边：★DSH 0.2.x 的跳转入口是 uiWorkspace.openSession（0.1.x 的 sessions.open 回落）', async () => {
+  // 0.2.x 起 `sessions` 只剩会话列表、没有 `open`；跳转走客户端服务的
+  // `uiWorkspace.openSession(id)`。不认这个入口的表现与 v2.1.3 那次一模一样：
+  // 书架那行退化成不可点的静态标「已绑定会话」。
+  const loadProps = async (services) => {
+    const mod = await loadClientModule()
+    const fake = makeFakeClientContext()
+    Object.assign(fake.services, services)
+    globalThis.document = makeFakeDocument()
+    try {
+      mod.apply(fake.ctx)
+    } finally {
+      delete globalThis.document
+    }
+    return fake.slotRegistrations
+      .find((entry) => entry.options.name === 'sidebar.right.pane.tab')
+      .options.inject('sess-1')
+  }
+
+  // ① 只有 uiWorkspace（0.2.x 的真实形状）
+  const opened = []
+  const viaNew = await loadProps({ uiWorkspace: { openSession: (id) => opened.push(`nav:${id}`) } })
+  const jumpNew = viaNew.getOpenSession()
+  assert.equal(typeof jumpNew, 'function', '有 uiWorkspace 就必须给出跳转函数')
+  jumpNew('bound-session')
+  assert.deepEqual(opened, ['nav:bound-session'])
+
+  // ② 只有 sessions.open（0.1.x）⇒ 回落仍然可用，老宿主不会因此坏掉
+  const openedOld = []
+  const viaOld = await loadProps({ sessions: { open: (id) => openedOld.push(`old:${id}`) } })
+  viaOld.getOpenSession()('bound-session')
+  assert.deepEqual(openedOld, ['old:bound-session'])
+
+  // ③ 两个都没有 ⇒ null（那一行不渲染按钮，其余功能照常）
+  const none = await loadProps({})
+  assert.equal(none.getOpenSession(), null)
+})
+
+test('浏览器半边：会话还在不在，读的是 sessions.list.getSnapshot().byId', async () => {
+  const mod = await loadClientModule()
+  const fake = makeFakeClientContext()
+  fake.services.sessions = { list: { getSnapshot: () => ({ byId: { 's-live': { id: 's-live' } } }) } }
+  globalThis.document = makeFakeDocument()
+  try {
+    mod.apply(fake.ctx)
+  } finally {
+    delete globalThis.document
+  }
+  const props = fake.slotRegistrations
+    .find((entry) => entry.options.name === 'sidebar.right.pane.tab')
+    .options.inject('sess-1')
+
+  const alive = props.getSessionAlive()
+  assert.equal(typeof alive, 'function', '有了 sessions.list 就该能判断')
+  assert.equal(alive('s-live'), true)
+  assert.equal(alive('s-gone'), false)
 })
 
 test('发到会话：绑定的是别的会话时，必须交接并跳过去', async () => {
