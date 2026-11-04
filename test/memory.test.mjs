@@ -412,8 +412,10 @@ function makeFiller(options = {}) {
 test('提示词：样本带章节号，「（中略）」原样保留', () => {
   const prompt = buildMemoryPrompt(BASE_REQUEST)
   assert.match(prompt, /第 1 到第 2 章的\*\*节选\*\*/)
-  assert.match(prompt, /### 第 1 章 第一章 雪/)
-  assert.match(prompt, /### 第 2 章 第二章 夜/)
+  // ⚠️ 2026-11-04：样本标题里的「第N章」现在会被**剥掉**（否则渲染成
+  //    `### 第 1 章 第一章 雪`，章号重复两遍 —— 实机体检发现的排版缺陷）。
+  assert.match(prompt, /### 第 1 章 雪/)
+  assert.match(prompt, /### 第 2 章 夜/)
   // 中略标记必须留着，否则模型会以为文本是连贯的，把两段拼成一句。
   assert.match(prompt, /（中略）/)
   // （3.0 后：注入+读者一共八节 —— 脉络已并入时间与分线。）

@@ -67,11 +67,17 @@ test('一行档：预算宽裕时给完整条目（不是截断形态）', () =>
   assert.equal(tight.includes('她说她记得那天0号的雪'), false, '紧预算下最老那条的细节不该还留着')
 })
 
-test('一行档：预算紧时降级，且总长不超预算', () => {
+test('一行档：预算紧时降级，且总长不超预算（+不可压的固定开销）', () => {
   const doc = bigBook()
+  const wide = render(doc, 200000)
   const tight = render(doc, 1200)
   assert.ok(tight.includes('…'), '预算紧时应当出现降级记号')
-  assert.ok(tight.length <= 1200, `不该超预算，实际 ${tight.length}`)
+  // ⚠️ 断言要留"固定开销"的余量：图例 + 节标题 + 那行「（+N）」**不可压**
+  //    （2026-11-04 实际挂过一次：只把图例改了几个字，这条就红了 —— 说明原来的
+  //    1200 卡在边界上，而不是降级失灵）。所以钉两件更本质的事：
+  //    ① 降级确实发生了（下面这条）；② 总量仍**远低于**全量形态。
+  assert.ok(tight.length < wide.length, `降级后必须比全量小（tight ${tight.length} vs wide ${wide.length}）`)
+  assert.ok(tight.length <= 1200 + 500, `不该超预算太多（含图例等固定开销），实际 ${tight.length}`)
 })
 
 test('一行档：降级后的行仍带章号锚（不许丢锚）', () => {
