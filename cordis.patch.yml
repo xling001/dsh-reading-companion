@@ -127,6 +127,12 @@
         #                           block inside budget, and therefore what keeps
         #                           the cached prefix stable. Set to 1 to disable
         #                           automatic compaction (trimming still happens).
+        #                           ⚠️ 2026-11-04 起**默认 1（关闭）**：真机实测压缩每批都
+        #                           触发却压不出空间（人物/一对关系/章号锚一条不少），
+        #                           只能把条目抹成同等长度 ⇒ 密度趋同、质量下滑。现在由
+        #                           注入侧裁剪链（降一行 / 名录化 / 置换 / 冷归档）控制注入量；
+        #                           代码一行没删，手动「压缩背景认识」仍可用。要恢复自动
+        #                           压缩把它设回 0.85。
         #   previousChapterMode     how much of the PREVIOUS chapter is fed in.
         #                           'tail' (default) = only its last 60%, cut at a
         #                           paragraph start; 'full' = the whole chapter
@@ -165,7 +171,7 @@
           # who are still on stage. This is the maximum number of names listed; the rest is
           # reported as a count. ACTIVE subjects are never roster-ized.
           rosterMaxNames: 120
-          compactThreshold: 0.85
+          compactThreshold: 1
           discussionLimit: 8
 
         # Sampling budget for ONE memory-fill call, in characters.
