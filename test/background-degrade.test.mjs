@@ -87,3 +87,17 @@ test('一行档：同一输入算两次，结果逐字相同（确定性）', ()
   const doc = bigBook()
   assert.equal(render(doc, 1200), render(doc, 1200))
 })
+
+test('关闭自动压缩：threshold = 1 必须真的不判"该压了"（即使文件远超预算）', async () => {
+  // ⚠️ 2026-11-04 真机发现的漏：threshold 被 `Math.min(1, …)` 钳在 1，
+  //    于是"设成 1"只把触发线抬到 budget 本身 —— 文件一旦超预算就照样触发 ✗。
+  //    这条用例把"设成 1 = 关"钉死。
+  const { needsCompaction } = await import('../lib/host/background.js')
+  const doc = bigBook() // 远超默认预算
+  const off = needsCompaction(doc, { budgetChars: 200, threshold: 1 })
+  assert.equal(off.over, false, 'threshold=1 时不许再判"该压了"')
+
+  // 反向：阈值回到 0.85 时，超预算就该判 true（否则开关是反的）。
+  const on = needsCompaction(doc, { budgetChars: 200, threshold: 0.85 })
+  assert.equal(on.over, true, 'threshold=0.85 且远超预算时必须判 true')
+})
