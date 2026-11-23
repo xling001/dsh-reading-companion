@@ -12,7 +12,7 @@
  *   1. inject 三个名字全部解析（apply 真的跑到了）；
  *   2. `systemPrompt.assemble()` 在**绑定会话**上产出我们的段落，
  *      在未绑定会话上不产出；
- *   3. `tools.guardReason()` 对指向书籍原始文本的调用给出拒绝，
+ *   3. `tools.checkGuards()` 对指向书籍原始文本的调用给出拒绝，
  *      对无关路径放行。
  *
  * 它依赖本机的 DSH 安装路径，所以在别人的机器上会**跳过**而不是失败——
@@ -38,7 +38,16 @@ const ROOT = join(HERE, '..')
 const TMP_ROOT = join(tmpdir(), 'drc-cordis-integration')
 
 /** 放本机路径的地方。一行，指向 node_modules 根；这个文件不提交。 */
-const LOCAL_APP_FILE = join(HERE, '.dsh-app-path')
+const LOCAL_APP_FILE = join(HERE, '.dsh-app-path')// ⭐ **2026-11-23：这台机器是靠一条 npm 夹具把这 3 个用例跑起来的。**
+// 宿主安装换成 asar 打包之后，磁盘上**再没有**可以 `import` 的宿主包了
+// （`app.asar.unpacked\node_modules\@deepseek-ai` 下只剩 skill 包）。
+// 所以在这里装一份**同版本**的官方包当夹具：
+//   目录  `E:\DSH workSpaces\dshSelfcare\dsh-host-fixture`（仓外，不进版本库）
+//   装法  `npm i --no-save @deepseek-ai/cordis@4.1.0 @deepseek-ai/dsh-tools@0.2.2-rc.5
+//          @deepseek-ai/dsh-system-prompt@0.2.2-rc.5 @deepseek-ai/dsh-workspace@0.2.2-rc.5
+//          @deepseek-ai/dsh-client-ui-theme@0.2.2-rc.5`
+//   指向  `test/.dsh-app-path` 写夹具的 `node_modules` 一行
+// ⇒ 内核 **0.2.2-rc.5** 上实测 **3 / 3 通过**；CI 上没有夹具，照旧走 skip（不变红）。
 
 /** 桌面版常见的安装根，顺序即优先级。 */
 const DSH_APP_ROOTS = [
@@ -73,6 +82,23 @@ function resolveDshApp() {
 
 /** 从 DSH 安装里按绝对路径加载一个官方包。 */
 const loadFromDsh = (rel) => import(pathToFileURL(`${DSH_APP}/@deepseek-ai/${rel}`).href)
+
+/**
+ * 在真宿主上问一次"这条工具调用会不会被我们的守卫拦下"。
+ *
+ * ⚠️ **2026-11-23（内核 0.2.2-rc.5）**：宿主**取消了** `tools.guardReason` —— 现在的公开面是
+ * `tools.checkGuards(exec)`，命中时返回 `{ reason }`（守卫返回的字符串被包成这个形状），
+ * 放行时返回 `undefined`。所以这里统一走它，只把"拒绝理由"取出来；
+ * 下面那些断言**一个字没动**（它们只关心"有没有理由、理由里是什么词"）——
+ * 换的只是问法，不是被问的东西。
+ */
+function guardReasonOf(tools, exec) {
+  if (typeof tools?.checkGuards !== 'function') {
+    throw new Error('真宿主必须提供 tools.checkGuards（0.2.2 起取代了 tools.guardReason）')
+  }
+  const denial = tools.checkGuards(exec)
+  return typeof denial === 'string' ? denial : denial?.reason
+}
 
 test('真实宿主：workspaceRegistry 包的形状没变（笔记落点依赖它）', async (t) => {
   let mod
@@ -154,7 +180,20 @@ test('真实 cordis：插件能在真宿主服务上装配，且三个 inject �
     assert.ok(mounted !== null, 'apply 没有跑到 —— 多半是某个 inject 名字与实际服务名不符（会表现为插件静默等待）')
     assert.equal(typeof mounted.service.library.importBook, 'function')
     assert.equal(typeof mounted.ctx.systemPrompt.assemble, 'function', '真宿主必须提供 assemble')
-    assert.equal(typeof mounted.ctx.tools.guardReason, 'function', '真宿主必须提供 guardReason')
+    assert.equal(typeof mounted.ctx.tools.checkGuards, 'function', '真宿主必须提供 tools.checkGuards（0.2.2 起取代了 guardReason）')
+
+    // ⚠️ **2026-11-23（内核 0.2.2-rc.5）**：装配段落时会投影**工具清单**
+    // （`systemPrompt.assemble` → `tools.selectExecutor(scope).describe(...)`），
+    // 所以这个组合里**必须先有一个 executor**，否则 `assemble()` 直接抛
+    // `TOOL_EXECUTOR_UNAVAILABLE` —— 从前没有这一步，因为那时装配不碰 executor。
+    // 这里给一个**空 executor**：本测试关心的是**我们自己的段落与工具闸**，
+    // 工具清单本身不是被测对象（给真的反而会把宿主的工具实现拖进来）。
+    // ⚠️ `describe()` 的返回形状是 `{ schemas: [...] }` —— 宿主会直接去 `.schemas.map()`。
+    ctx.tools.setExecutor({
+      describe: () => ({ schemas: [] }),
+      execute: async () => ({ results: [] }),
+    })
+    await settle()
 
     // ---- 造一本真书并绑定会话 ----
     const sourcePath = join(dir, '夜行.txt')
@@ -191,19 +230,19 @@ test('真实 cordis：插件能在真宿主服务上装配，且三个 inject �
     const otherText = real.renderPrompt(otherAssembly)
     assert.ok(!otherText.includes('本地阅读陪读'), '未绑定会话不该拿到陪读段落')
 
-    // ---- 工具闸：真宿主上的 guardReason ----
+    // ---- 工具闸：真宿主上的 checkGuards ----
     const bookPath = join(dir, 'books', book.bookId, 'content.txt')
-    const denied = mounted.ctx.tools.guardReason({ name: 'read', arguments: { file_path: bookPath } })
+    const denied = guardReasonOf(mounted.ctx.tools, { name: 'read', arguments: { file_path: bookPath } })
     assert.ok(typeof denied === 'string' && denied.length > 0, '指向 content.txt 的读取必须被拒绝')
     assert.match(denied, /原始文本/)
 
-    const allowed = mounted.ctx.tools.guardReason({ name: 'read', arguments: { file_path: join(dir, 'unrelated.md') } })
+    const allowed = guardReasonOf(mounted.ctx.tools, { name: 'read', arguments: { file_path: join(dir, 'unrelated.md') } })
     assert.equal(allowed, undefined, '无关路径必须放行')
 
     // 规则 B（一刀切工具黑名单）**已被刻意移除**：读者的诉求是"别剧透"，
     // 不是"别用工具"。所以陪读会话里 bash 现在是**放行**的——这里把这条
     // 反向断言钉住，防止哪天有人又把黑名单加回来。
-    const bashAllowed = mounted.ctx.tools.guardReason({
+    const bashAllowed = guardReasonOf(mounted.ctx.tools, {
       name: 'bash',
       arguments: {},
       agent: { id: 'session-bound', session: { id: 'session-bound' } },
@@ -211,7 +250,7 @@ test('真实 cordis：插件能在真宿主服务上装配，且三个 inject �
     assert.equal(bashAllowed, undefined, '陪读会话里普通工具不该被一刀切拦下（那会连查个史料都做不到）')
 
     // 取而代之的是联网闸：默认档位 block-all，陪读会话不能联网。
-    const webBlocked = mounted.ctx.tools.guardReason({
+    const webBlocked = guardReasonOf(mounted.ctx.tools, {
       name: 'web_search',
       arguments: { query: '随便什么' },
       agent: { id: 'session-bound', session: { id: 'session-bound' } },
@@ -220,7 +259,7 @@ test('真实 cordis：插件能在真宿主服务上装配，且三个 inject �
     assert.match(webBlocked, /首次阅读防剧透/)
 
     // 非陪读会话不受联网闸影响 —— 你在别的会话里搜什么是你的自由。
-    const webElsewhere = mounted.ctx.tools.guardReason({
+    const webElsewhere = guardReasonOf(mounted.ctx.tools, {
       name: 'web_search',
       arguments: { query: '随便什么' },
       agent: { id: 'session-other', session: { id: 'session-other' } },
@@ -242,7 +281,7 @@ test('真实 cordis：插件能在真宿主服务上装配，且三个 inject �
       return realBackground.apply(hotLibrary, args)
     }
     try {
-      const hotPathBlocked = mounted.ctx.tools.guardReason({
+      const hotPathBlocked = guardReasonOf(mounted.ctx.tools, {
         name: 'web_search',
         arguments: { query: '随便什么' },
         agent: { id: 'session-bound', session: { id: 'session-bound' } },
