@@ -180,7 +180,7 @@ against the installed state* 开头）：
 而本仓库封存件里早就写着"**不依赖**，主路径 native 三件套"。
 
 **`dsh.client.inject` 声明的是"壳要加载哪些客户端模块"**：本插件写的是
-`["@deepseek-ai/dsh-client-ui-slots", "@deepseek-ai/dsh-client-ui-sidebar-right"]`
+`["@deepseek-ai/dsh-client-ui-renderer", "@deepseek-ai/dsh-client-ui-sidebar-right"]`（`slots` 服务自内核 0.2.2 起由 `dsh-client-ui-renderer` 提供；旧的 `dsh-client-ui-slots` 包已不存在）
 （`package.json` 的 `dsh.client` 字段）。它**不是** npm 依赖 —— 那两个包不随包安装，
 所以**不能**、也不必写成 `peerDependencies`。
 

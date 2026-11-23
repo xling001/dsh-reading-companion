@@ -265,7 +265,11 @@ test('宿主半边：客户端半边真的依赖谁，就在 dsh.client.inject �
   // 的「跳过去」**永久**退化成不可点静态标（v1.68 docs/design-v1-archive.md §392–395）。惰性取用能让功能
   // 不消失，但**声明**才是"让宿主知道我们依赖谁、按序装配"的那一半。
   const REQUIRED = [
-    ['ctx.slots', '@deepseek-ai/dsh-client-ui-slots'],
+    // ⚠️ 2026-11-23：内核 0.2.2 起 `slots` 服务由 **`dsh-client-ui-renderer`** 提供 ——
+    //    旧的 `dsh-client-ui-slots` 包**已经不存在**了（整套 *slot* 包都被并掉了）。
+    //    列旧名不会报错（客户端加载器对不在 boot graph 里的 inject 是**静默忽略**），
+    //    但它等于没声明 ⇒ 装配顺序又回到"看运气"，正是 v1.68 那次事故的形状。
+    ['ctx.slots', '@deepseek-ai/dsh-client-ui-renderer'],
     ['ctx.sidebarRightTabs', '@deepseek-ai/dsh-client-ui-sidebar-right'],
   ]
   for (const [usage, packageName] of REQUIRED) {
