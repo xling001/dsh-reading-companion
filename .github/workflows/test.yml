@@ -43,3 +43,49 @@ jobs:
       # 设成空串反而可能被当成一个真实路径。
       - name: unit + integration tests
         run: node --test
+
+  # ⭐ 真宿主契约：**只在手动触发时**跑（Actions 页面的 "Run workflow"）。
+  #
+  # 为什么要单独一条作业：主矩阵刻意**零安装**（见上面那段注释），而这一条必须联网
+  # 装一份**同版本的官方内核包**当夹具 —— 那 3 条 `cordis-integration` 用例是**唯一**
+  # 能碰到宿主真实 API 的覆盖（inject 名字写错、`section()` 形状不对、`guard` 语义理解错，
+  # 表现都是"插件静默等待"，**全绿也看不出来**）。
+  # 2026-11-23 之前它们在 CI 上**永远是 skip**（宿主装进 asar 之后磁盘上再没有可 import 的包）。
+  #
+  # ⚠️ 下面那串版本号**必须跟着内核走**：它测的是"我们在真实内核上装得起来"，
+  #    版本不对就成了测另一个内核。内核升级时一起改（桌面壳的版本见日志 `dsh: 0.2.x`）。
+  host-contract:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    name: 真宿主契约（官方内核夹具）
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 装同版本内核包当夹具
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsh-host-fixture"
+          cd "$RUNNER_TEMP/dsh-host-fixture"
+          npm init -y >/dev/null
+          npm i --no-audit --no-fund --no-package-lock \
+            @deepseek-ai/cordis@4.1.0 \
+            @deepseek-ai/dsh-tools@0.2.2-rc.5 \
+            @deepseek-ai/dsh-system-prompt@0.2.2-rc.5 \
+            @deepseek-ai/dsh-workspace@0.2.2-rc.5 \
+            @deepseek-ai/dsh-client-ui-theme@0.2.2-rc.5
+
+      # ⚠️ **跑完还要断言"它没有 skip"** —— 夹具没生效时这条测试是**静默跳过**的，
+      # 而"跳过"和"通过"在 CI 界面上都是绿色，这正是这个洞此前存在五周的原因。
+      - name: 跑真宿主契约，并断言没有 skip
+        env:
+          DSH_APP_NODE_MODULES: ${{ runner.temp }}/dsh-host-fixture/node_modules
+        run: |
+          set -o pipefail
+          node --test test/cordis-integration.test.mjs | tee "$RUNNER_TEMP/host-contract.log"
+          if grep -q 'skipped 3' "$RUNNER_TEMP/host-contract.log"; then
+            echo "::error::夹具没生效 —— 3 条用例又 skip 了，等于零覆盖"
+            exit 1
+          fi
