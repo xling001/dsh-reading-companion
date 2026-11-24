@@ -42,7 +42,8 @@ const LOCAL_APP_FILE = join(HERE, '.dsh-app-path')// ⭐ **2026-11-23：这台�
 // 宿主安装换成 asar 打包之后，磁盘上**再没有**可以 `import` 的宿主包了
 // （`app.asar.unpacked\node_modules\@deepseek-ai` 下只剩 skill 包）。
 // 所以在这里装一份**同版本**的官方包当夹具：
-//   目录  `E:\DSH workSpaces\dshSelfcare\dsh-host-fixture`（仓外，不进版本库）
+//   目录  `%LOCALAPPDATA%\drc-host-fixture`（**在工作区之外** —— 2026-11-24 工作区被整理时，
+//         放在工作区里的那份被当垃圾清掉了，所以挪到用户目录下；不进版本库）
 //   装法  `npm i --no-save @deepseek-ai/cordis@4.1.0 @deepseek-ai/dsh-tools@0.2.2-rc.5
 //          @deepseek-ai/dsh-system-prompt@0.2.2-rc.5 @deepseek-ai/dsh-workspace@0.2.2-rc.5
 //          @deepseek-ai/dsh-client-ui-theme@0.2.2-rc.5`
